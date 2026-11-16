@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import subprocess
 import tempfile
 import threading
@@ -8,35 +9,81 @@ from typing import Callable, Optional, List, Dict, Any
 import requests
 
 from media_engine import get_ffmpeg_exe, CREATE_NO_WINDOW
+from gguf_whisper_loader import find_local_bionic_whisper_gguf, convert_bionic_gguf_to_ct2
 
 
 def _register_nvidia_dll_paths():
     """
     Zajistí, aby CTranslate2 / Faster-Whisper na Windows automaticky našel
-    CUDA 12 knihovny (cublas64_12.dll, cudnn64_9.dll) nainstalované přes pip ve venvu.
+    CUDA 12 knihovny (cublas64_12.dll, cublasLt64_12.dll, cudart64_12.dll)
+    přímo z Bionic Studia / LM Studia nebo z Python venvu.
     """
     if os.name != "nt":
         return
+
+    extra_dll_dirs = []
+
+    # 1. Bionic Studio / LM Studio CUDA 12 vendor knihovny
+    home = Path.home()
+    lms_backends = home / ".lmstudio" / "extensions" / "backends"
+    if lms_backends.is_dir():
+        for root, _, files in os.walk(lms_backends):
+            for f in files:
+                if f.lower() in {"cublas64_12.dll", "cudart64_12.dll"}:
+                    extra_dll_dirs.append(root)
+                    break
+
+    # 2. Případné nvidia balíčky ve venvu
     try:
         import site
-        packages_dirs = site.getsitepackages()
-        for pkg_dir in packages_dirs:
+        for pkg_dir in site.getsitepackages():
             nvidia_dir = os.path.join(pkg_dir, "nvidia")
             if os.path.isdir(nvidia_dir):
                 for root, dirs, _ in os.walk(nvidia_dir):
                     if "bin" in dirs:
-                        bin_path = os.path.join(root, "bin")
-                        os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
-                        if hasattr(os, "add_dll_directory"):
-                            try:
-                                os.add_dll_directory(bin_path)
-                            except Exception:
-                                pass
+                        extra_dll_dirs.append(os.path.join(root, "bin"))
     except Exception:
         pass
 
+    for bin_path in extra_dll_dirs:
+        if os.path.isdir(bin_path):
+            os.environ["PATH"] = bin_path + os.pathsep + os.environ.get("PATH", "")
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(bin_path)
+                except Exception:
+                    pass
+
 
 _register_nvidia_dll_paths()
+
+
+def detect_bionic_server_url() -> str:
+    """
+    Automaticky zjistí port lokálního serveru Bionic Studia / LM Studia
+    ze souboru ~/.lmstudio/apps/bionic/.internal/http-server-config.json (např. 1235 nebo 1234).
+    """
+    try:
+        cfg_path = Path.home() / ".lmstudio" / "apps" / "bionic" / ".internal" / "http-server-config.json"
+        if cfg_path.is_file():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                port = data.get("port")
+                if port:
+                    return f"http://localhost:{port}/v1"
+    except Exception:
+        pass
+
+    # Otestovat běžné porty 1235 a 1234
+    for port in (1235, 1234):
+        try:
+            r = requests.get(f"http://localhost:{port}/v1/models", timeout=0.8)
+            if r.status_code == 200:
+                return f"http://localhost:{port}/v1"
+        except Exception:
+            pass
+
+    return "http://localhost:1235/v1"
 
 
 def format_timestamp_srt(seconds: float) -> str:
@@ -109,13 +156,19 @@ class TranscriptionResult:
 
 
 class WhisperTranscriber:
-    """Správa lokálního Faster-Whisper modelu s podporou RTX 5060 Ti (CUDA float16) a fallbackem na CPU."""
+    """
+    Správa lokálního Whisper modelu s přímým využitím již staženého modelu v Bionic Studiu
+    (whisper-large-v3-turbo-Q8_0.gguf) na RTX 5060 Ti (CUDA float16) bez stahování z internetu.
+    """
 
     def __init__(self, cache_dir: Optional[str] = None):
         self.cache_dir = cache_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "models_cache")
         os.makedirs(self.cache_dir, exist_ok=True)
         self._loaded_model = None
         self._loaded_model_key = None
+
+    def get_local_bionic_model_path(self) -> Optional[str]:
+        return find_local_bionic_whisper_gguf()
 
     def _extract_temp_wav(self, media_path: str) -> str:
         """Extrahuje 16kHz mono WAV pro maximální rychlost a spolehlivost přepisu z jakéhokoli videa/audia."""
@@ -137,10 +190,43 @@ class WhisperTranscriber:
         )
         return tmp_wav
 
+    def _resolve_model_dir(
+        self,
+        model_size: str,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> tuple[str, bool]:
+        """
+        Pokud je zvolen model z Bionic Studia nebo 'large-v3-turbo' a na disku existuje
+        Bionic Studio GGUF model, převede/načte ho 100% lokálně bez internetu.
+        Vrací (model_path_or_id, is_local_dir).
+        """
+        local_gguf = find_local_bionic_whisper_gguf()
+        wants_turbo_or_bionic = (
+            "bionic" in model_size.lower()
+            or "turbo" in model_size.lower()
+        )
+        if local_gguf and wants_turbo_or_bionic:
+            ct2_dir = os.path.join(self.cache_dir, "bionic-whisper-large-v3-turbo-ct2")
+            convert_bionic_gguf_to_ct2(
+                gguf_path=local_gguf,
+                output_dir=ct2_dir,
+                quantization="float16",
+                progress_callback=progress_callback,
+            )
+            return ct2_dir, True
+
+        model_map = {
+            "large-v3 (Maximální přesnost)": "large-v3",
+            "medium (Střední velikost)": "medium",
+            "small (Rychlý, menší nároky)": "small",
+            "base (Základní rychlý)": "base",
+        }
+        return model_map.get(model_size, model_size), False
+
     def transcribe(
         self,
         media_path: str,
-        model_size: str = "large-v3-turbo",
+        model_size: str = "Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)",
         language: Optional[str] = None,
         device_preference: str = "cuda",
         progress_callback: Optional[Callable[[float, str], None]] = None,
@@ -159,17 +245,8 @@ class WhisperTranscriber:
             if cancel_event and cancel_event.is_set():
                 raise RuntimeError("Přepis byl zrušen.")
 
-            # Mapování čitelných názvů modelů na HuggingFace / CTranslate2 identifikátory
-            model_map = {
-                "large-v3-turbo (Doporučeno pro RTX 5060 Ti - extrémně rychlý a přesný)": "deepdml/faster-whisper-large-v3-turbo-ct2",
-                "large-v3 (Maximální přesnost)": "large-v3",
-                "medium (Střední velikost)": "medium",
-                "small (Rychlý, menší nároky)": "small",
-                "base (Základní rychlý)": "base",
-            }
-            actual_model_id = model_map.get(model_size, model_size)
+            actual_model_id, is_local = self._resolve_model_dir(model_size, progress_callback)
 
-            # Zvolíme device & compute_type
             use_cuda = "cuda" in device_preference.lower() or "gpu" in device_preference.lower()
             device = "cuda" if use_cuda else "cpu"
             compute_type = "float16" if device == "cuda" else "int8"
@@ -178,21 +255,25 @@ class WhisperTranscriber:
             if self._loaded_model is None or self._loaded_model_key != model_key:
                 if progress_callback:
                     progress_callback(
-                        0.05,
-                        f"Načítám AI model '{model_size.split(' ')[0]}' na {device.upper()} ({compute_type})... (Při 1. spuštění se model stáhne)"
+                        0.08,
+                        f"Inicializuji lokální model na {device.upper()} ({compute_type})..."
                     )
                 try:
                     self._loaded_model = WhisperModel(
                         actual_model_id,
                         device=device,
                         compute_type=compute_type,
-                        download_root=self.cache_dir,
+                        download_root=None if is_local else self.cache_dir,
+                        local_files_only=is_local,
                     )
                     self._loaded_model_key = model_key
                 except Exception as cuda_err:
                     if device == "cuda":
                         if progress_callback:
-                            progress_callback(0.06, f"CUDA inicializace selhala ({cuda_err}), přepínám na CPU (int8) na Ryzenu 9600...")
+                            progress_callback(
+                                0.09,
+                                f"CUDA inicializace selhala ({cuda_err}), přepínám na CPU (int8) na Ryzenu 9600..."
+                            )
                         device = "cpu"
                         compute_type = "int8"
                         model_key = f"{actual_model_id}:cpu:int8"
@@ -200,7 +281,8 @@ class WhisperTranscriber:
                             actual_model_id,
                             device="cpu",
                             compute_type="int8",
-                            download_root=self.cache_dir,
+                            download_root=None if is_local else self.cache_dir,
+                            local_files_only=is_local,
                             cpu_threads=8,
                         )
                         self._loaded_model_key = model_key
@@ -208,7 +290,7 @@ class WhisperTranscriber:
                         raise
 
             if progress_callback:
-                progress_callback(0.10, "Spouštím AI přepis audia...")
+                progress_callback(0.12, "Spouštím AI přepis audia...")
 
             lang_code = None
             if language and not language.startswith("Auto"):
@@ -240,7 +322,7 @@ class WhisperTranscriber:
                     segment_callback(seg_dict)
 
                 if progress_callback:
-                    frac = 0.10 + 0.88 * min(1.0, seg.end / total_dur)
+                    frac = 0.12 + 0.86 * min(1.0, seg.end / total_dur)
                     progress_callback(
                         frac,
                         f"Přepisuji ({info.language.upper()}): {format_timestamp_short(seg.end)} / {format_timestamp_short(total_dur)}"
@@ -265,37 +347,57 @@ class WhisperTranscriber:
 
 class BionicStudioClient:
     """
-    Klient pro propojení s LM Studio / Bionic Studio lokálním serverem (OpenAI-kompatibilní API).
-    Výchozí adresa: http://localhost:1234/v1
+    Klient pro propojení s Bionic Studio / LM Studio lokálním serverem (OpenAI-kompatibilní API).
+    Automaticky detekuje port (1235 nebo 1234) a odfiltruje non-LLM modely (whisper, surya-ocr, embedding).
     """
 
-    def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: str = "lm-studio"):
-        self.base_url = base_url.rstrip("/")
+    NON_LLM_KEYWORDS = ("whisper", "embed", "surya", "ocr", "tts", "nomic")
+
+    def __init__(self, base_url: Optional[str] = None, api_key: str = "lm-studio"):
+        self.base_url = (base_url or detect_bionic_server_url()).rstrip("/")
         self.api_key = api_key
+
+    def _filter_llm_models(self, models: List[str]) -> List[str]:
+        llm_only = [
+            m for m in models
+            if not any(kw in m.lower() for kw in self.NON_LLM_KEYWORDS)
+        ]
+        return llm_only if llm_only else models
 
     def check_connection(self) -> tuple[bool, str, List[str]]:
         """
-        Otestuje spojení s Bionic / LM Studio serverem a vrátí:
-        (is_connected, status_message, list_of_model_ids)
+        Otestuje spojení s Bionic / LM Studio serverem. Pokud na zadaném portu neodpovídá,
+        automaticky zkusí detekovaný port z Bionic Studia (např. 1235 <-> 1234).
         """
-        url = f"{self.base_url}/models"
-        try:
-            resp = requests.get(
-                url,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=4,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                models = [m.get("id", "unknown") for m in data.get("data", [])]
-                if models:
-                    return True, f"Připojeno ({len(models)} modelů aktivních)", models
-                return True, "Server běží, ale není načten žádný model v paměti", []
-            return False, f"Server vrátil HTTP {resp.status_code}", []
-        except requests.exceptions.ConnectionError:
-            return False, "Server neběží (spusťte Bionic / LM Studio Server na portu 1234)", []
-        except Exception as e:
-            return False, f"Chyba připojení: {str(e)}", []
+        urls_to_try = [self.base_url]
+        auto_url = detect_bionic_server_url().rstrip("/")
+        if auto_url not in urls_to_try:
+            urls_to_try.append(auto_url)
+        for fallback in ("http://localhost:1235/v1", "http://localhost:1234/v1"):
+            if fallback not in urls_to_try:
+                urls_to_try.append(fallback)
+
+        for candidate_url in urls_to_try:
+            try:
+                resp = requests.get(
+                    f"{candidate_url}/models",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=3,
+                )
+                if resp.status_code == 200:
+                    self.base_url = candidate_url
+                    data = resp.json()
+                    all_models = [m.get("id", "unknown") for m in data.get("data", [])]
+                    llm_models = self._filter_llm_models(all_models)
+                    has_whisper = any("whisper" in m.lower() for m in all_models)
+                    whisper_tag = " + Whisper Turbo nalezen" if has_whisper else ""
+                    if llm_models:
+                        return True, f"Připojeno ({llm_models[0]}{whisper_tag})", llm_models
+                    return True, f"Server běží ({len(all_models)} modelů)", all_models
+            except Exception:
+                continue
+
+        return False, "Server neběží (zapněte Bionic Studio na portu 1235/1234)", []
 
     def process_transcript(
         self,
@@ -304,16 +406,16 @@ class BionicStudioClient:
         model_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         """
-        Odešle přepsaný text do Bionic / LM Studia ke zpracování (shrnutí, korektura, akční body, překlad...).
+        Odešle přepsaný text do Bionic Studia ke zpracování pomocí načteného LLM (např. Gemma-4-12B nebo Qwen3.8).
         """
         if not transcript_text.strip():
             return False, "Přepis je prázdný – nejprve prosím spusťte AI přepis audia."
 
-        ok, msg, models = self.check_connection()
+        ok, msg, llm_models = self.check_connection()
         if not ok:
-            return False, f"Nelze se spojit s Bionic / LM Studiem na {self.base_url}.\nDetail: {msg}"
+            return False, f"Nelze se spojit s Bionic Studiem na {self.base_url}.\nDetail: {msg}"
 
-        chosen_model = model_id if (model_id and model_id in models) else (models[0] if models else "local-model")
+        chosen_model = model_id if (model_id and model_id in llm_models) else (llm_models[0] if llm_models else "local-model")
 
         url = f"{self.base_url}/chat/completions"
         payload = {

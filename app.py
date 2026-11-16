@@ -25,6 +25,7 @@ from ai_engine import (
     BionicStudioClient,
     TranscriptionResult,
     format_timestamp_short,
+    detect_bionic_server_url,
 )
 
 # Nastavení vzhledu
@@ -82,10 +83,11 @@ class BionicMediaStudioApp(BaseWindow):
         threading.Thread(target=self._refresh_bionic_status_bg, daemon=True).start()
 
     def _load_settings(self):
+        detected_url = detect_bionic_server_url()
         self.settings = {
-            "bionic_url": "http://localhost:1234/v1",
+            "bionic_url": detected_url,
             "bionic_api_key": "lm-studio",
-            "whisper_model": "large-v3-turbo (Doporučeno pro RTX 5060 Ti - extrémně rychlý a přesný)",
+            "whisper_model": "Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)",
             "whisper_device": "GPU - NVIDIA CUDA (RTX 5060 Ti 16GB FP16)",
             "whisper_lang": "Auto (Automatická detekce)",
             "output_dir": "",
@@ -94,6 +96,11 @@ class BionicMediaStudioApp(BaseWindow):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     saved = json.load(f)
+                    # Pokud měl uživatel starou výchozí adresu 1234 a Bionic běží na 1235, aktualizujeme ji
+                    if saved.get("bionic_url") == "http://localhost:1234/v1" and detected_url != "http://localhost:1234/v1":
+                        saved["bionic_url"] = detected_url
+                    if "Doporučeno pro RTX 5060 Ti" in saved.get("whisper_model", ""):
+                        saved["whisper_model"] = "Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)"
                     self.settings.update(saved)
             except Exception:
                 pass
@@ -533,13 +540,13 @@ class BionicMediaStudioApp(BaseWindow):
         whisper_bar.grid(row=0, column=0, padx=10, pady=(6, 6), sticky="ew")
         whisper_bar.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-        ctk.CTkLabel(whisper_bar, text="AI Model (Faster-Whisper):", font=ctk.CTkFont(size=12, weight="bold")).grid(
+        ctk.CTkLabel(whisper_bar, text="AI Model (Bionic Studio / Lokální):", font=ctk.CTkFont(size=12, weight="bold")).grid(
             row=0, column=0, padx=10, pady=(8, 2), sticky="w"
         )
         self.combo_whisper_model = ctk.CTkOptionMenu(
             whisper_bar,
             values=[
-                "large-v3-turbo (Doporučeno pro RTX 5060 Ti - extrémně rychlý a přesný)",
+                "Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)",
                 "large-v3 (Maximální přesnost)",
                 "medium (Střední velikost)",
                 "small (Rychlý, menší nároky)",
@@ -778,23 +785,21 @@ Tento program je navržen přímo pro vaši sestavu (AMD Ryzen 9600 + NVIDIA GeF
       Klasické softwarové kódování přes procesor.
 
 --------------------------------------------------------------------
-4. LOKÁLNÍ AI PŘEPIS AUDIA (FASTER-WHISPER NA RTX 5060 Ti)
+4. LOKÁLNÍ AI PŘEPIS AUDIA (PŘÍMO Z BIONIC STUDIA NA RTX 5060 Ti)
 --------------------------------------------------------------------
 • Přejděte na záložku „🤖 AI Přepis & Bionic Studio“.
 • Vyberte vlevo soubor, který chcete přepsat (funguje přímo na videa MP4/MOV i na audio MP3/AAC/WAV – program si zvuk extrahuje automaticky na pozadí).
-• Doporučený model: „large-v3-turbo“ – díky 16 GB VRAM na vaší RTX 5060 Ti běží v přesnosti FP16 několikanásobně rychleji než běžný Whisper při špičkové přesnosti v češtině i angličtině.
-• Při prvním spuštění se zvolený model automaticky stáhne do složky `models_cache` (cca 1.5 GB). Další spuštění už jsou okamžitá a plně offline.
+• Výchozí model: „Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)“ – aplikace automaticky načte váš již stažený model přímo z úložiště Bionic Studia (`~/.lmstudio/models/handy-computer/whisper-large-v3-turbo-gguf/whisper-large-v3-turbo-Q8_0.gguf`) a spustí ho v přesnosti FP16 na vaší RTX 5060 Ti bez jakéhokoliv stahování z internetu!
 • Po dokončení můžete přepis uložit jako čistý text (.TXT) nebo jako časované titulky (.SRT / .VTT) přímo do videa.
 
 --------------------------------------------------------------------
 5. PROPOJENÍ S BIONIC STUDIEM / LM STUDIEM
 --------------------------------------------------------------------
 Jak propojit aplikaci s Bionic / LM Studiem:
-1. Otevřete LM Studio / Bionic.
-2. Načtěte svůj oblíbený lokální LLM model (např. Llama-3.1, Qwen-2.5, Mistral nebo Gemma).
-3. V sekci Developer / Local Server zapněte lokální API server (standardně běží na adrese `http://localhost:1234/v1`).
-4. V naší aplikaci klikněte na „🔄 Otestovat spojení“ – rozsvítí se zelený stav „Připojeno“.
-5. Vyberte požadovaný úkol (Shrnutí, Článek, Akční body, Překlad) a klikněte na „✨ Zpracovat v Bionic Studiu“.
+1. Otevřete Bionic / LM Studio (aplikace automaticky detekuje běžící port, např. `http://localhost:1235/v1` nebo `1234`).
+2. Načtěte svůj oblíbený lokální LLM model (např. Gemma-4-12B, Qwen-3.8).
+3. V naší aplikaci klikněte na „🔄 Otestovat spojení“ – rozsvítí se zelený stav „Připojeno“.
+4. Vyberte požadovaný úkol (Shrnutí, Článek, Akční body, Překlad) a klikněte na „✨ Zpracovat v Bionic Studiu“.
 """
         help_box.insert("1.0", guide_text)
         help_box.configure(state="disabled")
@@ -1229,7 +1234,12 @@ Jak propojit aplikaci s Bionic / LM Studiem:
         ok, msg, _ = self.bionic_client.check_connection()
         color = ("#15803d", "#4ade80") if ok else ("#b91c1c", "#f87171")
         prefix = "🟢 " if ok else "🔴 "
-        self.after(0, lambda: self.lbl_bionic_status.configure(text=prefix + msg, text_color=color))
+        def _upd():
+            self.lbl_bionic_status.configure(text=prefix + msg, text_color=color)
+            if ok and self.entry_bionic_url.get().strip() != self.bionic_client.base_url:
+                self.entry_bionic_url.delete(0, "end")
+                self.entry_bionic_url.insert(0, self.bionic_client.base_url)
+        self.after(0, _upd)
 
     def _on_test_bionic(self):
         url = self.entry_bionic_url.get().strip()

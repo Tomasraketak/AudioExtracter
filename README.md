@@ -56,15 +56,13 @@ Přejděte na druhou záložku **🎬 Konverze Videa (MP4 ⇄ MOV)**:
 
 ---
 
-### 4. Lokální AI Přepis audia a videa (Faster-Whisper)
+### 4. Lokální AI Přepis audia a videa (přímo z modelu v Bionic Studiu – bez stahování!)
 Přejděte na třetí záložku **🤖 AI Přepis & Bionic Studio**:
 1. Vyberte vlevo video nebo audio soubor.
 2. Zvolte **AI Model**:
-   * `large-v3-turbo` *(Doporučeno pro RTX 5060 Ti)* – využívá 16 GB VRAM v režimu `float16`, přepisuje extrémně rychle a s vynikající přesností v češtině, slovenštině i angličtině.
-   * K dispozici jsou také modely `large-v3`, `medium`, `small` a `base`.
+   * `Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)` *(Výchozí)* – aplikace automaticky najde váš již stažený model v Bionic Studiu (`~/.lmstudio/models/handy-computer/whisper-large-v3-turbo-gguf/whisper-large-v3-turbo-Q8_0.gguf`) a spustí jej přímo na vaší **RTX 5060 Ti (16 GB VRAM)** v režimu `float16` za pomocí CUDA knihoven z Bionic Studia **100% offline bez stahování z internetu**.
 3. Zvolte **Jazyk audia** (`Auto`, `Čeština`, `Angličtina`...) a **Výpočetní jednotku** (`GPU - NVIDIA CUDA` nebo `CPU - AMD Ryzen 9600`).
 4. Klikněte na **🎙️ Spustit AI Přepis**.
-   * *Poznámka:* Při úplně prvním spuštění si program automaticky stáhne zvolený model do složky `models_cache/`. Všechna další spuštění už probíhají okamžitě a 100% offline.
 5. Přepis naskakuje živě po větách přímo do textového editoru. Následně ho můžete jedním kliknutím:
    * Zkopírovat do schránky (`📋 Kopírovat text`)
    * Uložit jako čistý text (`💾 Uložit .TXT`)
@@ -74,17 +72,17 @@ Přejděte na třetí záložku **🤖 AI Přepis & Bionic Studio**:
 
 ### 5. Propojení s Bionic Studiem / LM Studiem
 Aplikace obsahuje přímého klienta pro lokální AI server **Bionic Studio / LM Studio**:
-1. Otevřete **LM Studio / Bionic** a načtěte libovolný lokální jazykový model (např. *Qwen 2.5*, *Llama 3.1*, *Mistral* nebo *Gemma*).
-2. Zapněte lokální API server (standardně běží na `http://localhost:1234/v1`).
-3. V naší aplikaci na záložce **🤖 AI Přepis & Bionic Studio** klikněte na **🔄 Otestovat spojení** – indikátor se přepne na 🟢 **Připojeno**.
-4. Vyberte z roletky **AI Úkol** (např. *Vytvoř strukturované shrnutí*, *Uprav přepis do čtivého článku*, *Vypiš úkoly Action Items*, *Přelož přepis*) a klikněte na **✨ Zpracovat v Bionic Studiu**.
+1. Aplikace si **automaticky načte port vašeho běžícího Bionic Studia** ze souboru `~/.lmstudio/apps/bionic/.internal/http-server-config.json` (např. `http://localhost:1235/v1` nebo `1234`).
+2. V naší aplikaci na záložce **🤖 AI Přepis & Bionic Studio** uvidíte rovnou stav 🟢 **Připojeno (google/gemma-4-12b-qat + Whisper Turbo nalezen)**.
+3. Vyberte z roletky **AI Úkol** (např. *Vytvoř strukturované shrnutí*, *Uprav přepis do čtivého článku*, *Vypiš úkoly Action Items*, *Přelož přepis*) a klikněte na **✨ Zpracovat v Bionic Studiu**.
 
 ---
 
 ## 🗂️ Struktura projektu
 * [`app.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/app.py) – Hlavní GUI aplikace (CustomTkinter + Drag & Drop).
 * [`media_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/media_engine.py) – FFmpeg jádro pro analýzu médií, extrakci zvuku, hlasitostní normalizaci a GPU NVENC konverze.
-* [`ai_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/ai_engine.py) – Modul pro lokální AI přepis (`Faster-Whisper` s podporou CUDA 12 / CPU fallbackem) a komunikaci s `Bionic Studio` API.
+* [`ai_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/ai_engine.py) – Modul pro lokální AI přepis s podporou modelu z Bionic Studia, CUDA 12 z Bionic Studia a komunikaci s Bionic Studio API.
+* [`gguf_whisper_loader.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/gguf_whisper_loader.py) – Offline loader a konvertor pro stažený `whisper-large-v3-turbo-Q8_0.gguf` model přímo z Bionic Studia.
 * [`setup.bat`](file:///c:/Projekty/AudioExtracter/AudioExtracter/setup.bat) – Jednoklikový instalátor prostředí, závislostí a zástupce na Ploše.
 * [`run.bat`](file:///c:/Projekty/AudioExtracter/AudioExtracter/run.bat) – Rychlý spouštěč aplikace bez konzole.
 * [`create_shortcut.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/create_shortcut.py) & [`generate_icon.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/generate_icon.py) – Generátor ikony a zástupce na Plochu Windows.
