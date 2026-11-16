@@ -87,8 +87,47 @@ Aplikace obsahuje přímého klienta pro lokální AI server **Bionic Studio / L
 
 ---
 
+### 6. 🔥 Reels Titulky, Kontextová oprava přes Gemma 4 12B QAT & DaVinci Resolve Overlay
+Přejděte na záložku **🔥 Reels Titulky & Overlay (DaVinci)**:
+
+#### Krok 1: Časový výřez a dvoustupňový AI přepis (`Whisper Turbo` ➔ `Gemma 4 12B QAT`)
+* **Limitování části videa (nepovinné):** Zadejte čas **Od** (např. `00:10`) a **Do** (např. `00:50`), pokud chcete otitulkovat jen vybraný úsek videa. Můžete zvolit, zda má výsledný overlay začínat od `00:00` (pro samostatný oříznutý klip), nebo si má zachovat původní čas videa (pro vložení na plnou časovou osu v DaVinci Resolve).
+* **Slova na titulek & Téma:** Zvolte počet slov na obrazovce (`2–3 slova` pro dynamické Reels/TikTok, `1 slovo` pro Hormozi Flash styl, nebo `4–5 slov`) a volitelně připište téma/klíčová slova.
+* Klikněte na **🪄 1. Přepsat (Whisper Turbo) + Opravit (Gemma 4 12B)**:
+  1. **Whisper Turbo** nejprve na GPU provede přepis s přesným časováním každého jednotlivého slova (*word-level timestamps*).
+  2. Celý přepis se následně pošle do vašeho lokálního modelu **`google/gemma-4-12b-qat`**, který podle okolního kontextu opraví přeslechnutá nebo nesmyslná slova při 100% zachování časových značek.
+* V textovém editoru vlevo dole můžete libovolné slovo nebo řádek ještě ručně upravit.
+
+#### Krok 2: Vzhled titulků a živý náhled
+* Vpravo nahoře vidíte **živý grafický náhled** přesně tak, jak budou titulky vypadat.
+* Můžete nastavit:
+  * **Font a velikost písma** (`Arial Black`, `Impact`, `Segoe UI Bold`, `Trebuchet MS`, `Verdana`, `Tahoma`... + velikost `52 px` až `115 px`).
+  * **Hlavní barvu textu, barvu právě vyslovovaného slova (Karaoke efekt) a barvu/tloušťku obrysu** (včetně vlastního kapátka barev `🎨`).
+  * **Pozici a efekty:** Dole / Uprostřed / Nahoře, výšku od okraje, `VELKÁ PÍSMENA (ALL CAPS)`, `Pop-in animaci` a tmavý box pod textem.
+  * **Cílové rozlišení a poměr stran:** `9:16 Vertikální (1080×1920 nebo 4K 2160×3840)` pro Reels/TikTok/Shorts, `16:9 Horizontální (1920×1080 nebo 4K)` pro YouTube, `1:1 Čtverec`, `4:5 Portrét` nebo `Původní rozlišení zdrojového videa`.
+
+#### Krok 3: Jak přidat titulky do DaVinci Resolve (3 snadné způsoby)
+Klikněte na **🎬 2. Vygenerovat Reels Video Overlay / Titulky**. Podle zvoleného režimu exportu postupujte v **DaVinci Resolve** takto:
+
+1. **🅰️ Průhledné `.MOV` s Alfa kanálem *(Doporučeno – nejjednodušší použití)*:**
+   * V DaVinci Resolve otevřete záložku **Edit**.
+   * Na stopu **Video 1 (V1)** dejte své původní video.
+   * Vygenerovaný soubor `..._reels_overlay_alpha.mov` přetáhněte myší přímo nad něj do stopy **Video 2 (V2)**.
+   * **Hotovo!** Soubor má přímý průhledný Alfa kanál (`QuickTime Animation ARGB`), takže titulky včetně animací, obrysů, stínů a Karaoke zvýraznění okamžitě visí nad původním videem bez jakéhokoliv klíčování.
+2. **🅱️ Černé pozadí `.MP4` *(Extrémně malý soubor přes GPU NVENC)*:**
+   * Vložte vygenerovaný `.mp4` soubor do stopy **Video 2 (V2)** nad původní video.
+   * Označte klip ve stopě V2, vpravo nahoře otevřete **Inspector ➔ Composite** a přepněte **Composite Mode** z `Normal` na **`Screen`** nebo **`Add`**. Černé pozadí okamžitě zmizí.
+3. **🅲 Zelené plátno `.MP4` (`#00FF00`) / Přímé vypálení do videa (`Burn-in`) / `.ASS` + `.SRT`:**
+   * U zeleného plátna použijte v DaVinci efekt **3D Keyer**.
+   * U režimu **Přímé vypálení do videa (Burn-in)** program rovnou vytvoří hotové video s titulky přímo v obraze.
+   * Současně se vedle videa vždy automaticky uloží i soubory `.ASS` a `.SRT` (`File ➔ Import ➔ Subtitle`).
+
+---
+
 ## 🗂️ Struktura projektu
 * [`app.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/app.py) – Hlavní GUI aplikace (CustomTkinter + Drag & Drop).
+* [`reels_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/reels_engine.py) – Engine pro dynamické Reels titulky, kontextovou opravu přes Gemma 4 12B QAT, živý náhled a DaVinci Resolve Alfa/NVENC overlay export.
+* [`youtube_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/youtube_engine.py) – Modul pro stahování YouTube videí a audia (`MP4`, `MOV`, `MKV`, `MP3`, `AAC`, `WAV`).
 * [`media_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/media_engine.py) – FFmpeg jádro pro analýzu médií, extrakci zvuku, hlasitostní normalizaci a GPU NVENC konverze.
 * [`ai_engine.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/ai_engine.py) – Modul pro lokální AI přepis s podporou modelu z Bionic Studia, CUDA 12 z Bionic Studia a komunikaci s Bionic Studio API.
 * [`gguf_whisper_loader.py`](file:///c:/Projekty/AudioExtracter/AudioExtracter/gguf_whisper_loader.py) – Offline loader a konvertor pro stažený `whisper-large-v3-turbo-Q8_0.gguf` model přímo z Bionic Studia.

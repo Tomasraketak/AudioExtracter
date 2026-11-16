@@ -38,6 +38,8 @@ def probe_media_info(file_path: str) -> Dict[str, Any]:
         "video_info": "Žádné video",
         "audio_info": "Žádné audio",
         "size_mb": 0.0,
+        "width": 1080,
+        "height": 1920,
     }
     try:
         if os.path.exists(file_path):
@@ -72,6 +74,10 @@ def probe_media_info(file_path: str) -> Dict[str, Any]:
                 # Zkrátit výpis
                 parts = [p.strip() for p in v_desc.split(",")]
                 info["video_info"] = ", ".join(parts[:3])
+                res_m = re.search(r"\b(\d{2,5})x(\d{2,5})\b", v_desc)
+                if res_m:
+                    info["width"] = int(res_m.group(1))
+                    info["height"] = int(res_m.group(2))
 
         # Audio stream
         aud_match = re.search(r"Stream #\d+:\d+.*?: Audio:\s*([^\n\r]+)", stderr)

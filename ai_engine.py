@@ -182,13 +182,22 @@ class WhisperTranscriber:
     def get_local_bionic_model_path(self) -> Optional[str]:
         return find_local_bionic_whisper_gguf()
 
-    def _extract_temp_wav(self, media_path: str) -> str:
+    def _extract_temp_wav(
+        self,
+        media_path: str,
+        trim_start_sec: Optional[float] = None,
+        trim_end_sec: Optional[float] = None,
+    ) -> str:
         """Extrahuje 16kHz mono WAV pro maximální rychlost a spolehlivost přepisu z jakéhokoli videa/audia."""
         ffmpeg = get_ffmpeg_exe()
         tmp_fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="whisper_audio_")
         os.close(tmp_fd)
-        cmd = [
-            ffmpeg, "-y", "-hide_banner",
+        cmd = [ffmpeg, "-y", "-hide_banner"]
+        if trim_start_sec is not None and trim_start_sec > 0:
+            cmd += ["-ss", f"{trim_start_sec:.2f}"]
+        if trim_end_sec is not None and trim_end_sec > 0:
+            cmd += ["-to", f"{trim_end_sec:.2f}"]
+        cmd += [
             "-i", media_path,
             "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
             tmp_wav
@@ -241,6 +250,9 @@ class WhisperTranscriber:
         model_size: str = "Bionic Studio: whisper-large-v3-turbo (Lokální model - bez stahování)",
         language: Optional[str] = None,
         device_preference: str = "cuda",
+        word_timestamps: bool = False,
+        trim_start_sec: Optional[float] = None,
+        trim_end_sec: Optional[float] = None,
         progress_callback: Optional[Callable[[float, str], None]] = None,
         segment_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -250,9 +262,10 @@ class WhisperTranscriber:
         if progress_callback:
             progress_callback(0.02, "Připravuji zvukovou stopu (16 kHz WAV)...")
 
+        start_offset = float(trim_start_sec) if (trim_start_sec is not None and trim_start_sec > 0) else 0.0
         tmp_wav = None
         try:
-            tmp_wav = self._extract_temp_wav(media_path)
+            tmp_wav = self._extract_temp_wav(media_path, trim_start_sec=trim_start_sec, trim_end_sec=trim_end_sec)
 
             if cancel_event and cancel_event.is_set():
                 raise RuntimeError("Přepis byl zrušen.")
@@ -314,6 +327,7 @@ class WhisperTranscriber:
                     tmp_wav,
                     language=lang_code,
                     beam_size=5,
+                    word_timestamps=word_timestamps,
                     vad_filter=True,
                     vad_parameters=dict(min_silence_duration_ms=500),
                 )
@@ -342,6 +356,7 @@ class WhisperTranscriber:
                         tmp_wav,
                         language=lang_code,
                         beam_size=5,
+                        word_timestamps=word_timestamps,
                         vad_filter=True,
                         vad_parameters=dict(min_silence_duration_ms=500),
                     )
@@ -355,10 +370,20 @@ class WhisperTranscriber:
                 if cancel_event and cancel_event.is_set():
                     raise RuntimeError("Přepis byl zrušen uživatelem.")
 
+                words_list = []
+                if word_timestamps and getattr(seg, "words", None):
+                    for w in seg.words:
+                        words_list.append({
+                            "start": float(w.start) + start_offset,
+                            "end": float(w.end) + start_offset,
+                            "word": w.word.strip(),
+                        })
+
                 seg_dict = {
-                    "start": seg.start,
-                    "end": seg.end,
+                    "start": float(seg.start) + start_offset,
+                    "end": float(seg.end) + start_offset,
                     "text": seg.text.strip(),
+                    "words": words_list,
                 }
                 collected_segments.append(seg_dict)
 
@@ -478,7 +503,10 @@ class BionicStudioClient:
                     "content": f"{task_prompt}\n\n---\nZDE JE PŘEPIS AUDIA:\n{transcript_text}",
                 },
             ],
-            "temperature": 0.3,
+            "temperature": 0.5,
+            "repeat_penalty": 1.15,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "reasoning_effort": "none",
         }
 
         try:

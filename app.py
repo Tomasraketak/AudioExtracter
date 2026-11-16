@@ -4,7 +4,7 @@ import json
 import threading
 import subprocess
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, colorchooser
 import customtkinter as ctk
 
 try:
@@ -28,6 +28,16 @@ from ai_engine import (
     detect_bionic_server_url,
 )
 from youtube_engine import fetch_youtube_info, download_youtube_media
+from reels_engine import (
+    ReelsSubtitleStyle,
+    parse_time_input,
+    group_words_into_reels_chunks,
+    format_chunks_for_editor,
+    parse_chunks_from_editor,
+    correct_chunks_with_gemma,
+    render_style_preview_image,
+    render_reels_video_overlay,
+)
 
 # Nastavení vzhledu
 ctk.set_appearance_mode("Dark")
@@ -55,8 +65,8 @@ class BionicMediaStudioApp(BaseWindow):
         super().__init__()
 
         self.title("Bionic Media & Audio Studio — RTX 5060 Ti & Ryzen 9600 Edition")
-        self.geometry("1180x820")
-        self.minsize(1020, 720)
+        self.geometry("1280x860")
+        self.minsize(1100, 750)
         ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
         if os.path.exists(ico_path):
             try:
@@ -67,6 +77,7 @@ class BionicMediaStudioApp(BaseWindow):
         # Stav aplikace
         self.files: list[str] = []
         self.selected_file: str | None = None
+        self.selected_file_info: dict = {}
         self.output_dir: str = ""
         self.is_busy: bool = False
         self.cancel_event = threading.Event()
@@ -75,6 +86,12 @@ class BionicMediaStudioApp(BaseWindow):
         self.transcriber = WhisperTranscriber()
         self.last_transcription: TranscriptionResult | None = None
         self.bionic_client = BionicStudioClient()
+
+        # Stav pro Reels Titulky & Video Overlay
+        self.reels_chunks: list[dict] = []
+        self.reels_primary_hex: str = "#FFFFFF"
+        self.reels_highlight_hex: str = "#FFE600"
+        self.reels_outline_hex: str = "#000000"
 
         self._load_settings()
         self._build_ui()
@@ -276,12 +293,14 @@ class BionicMediaStudioApp(BaseWindow):
         self.tab_audio = self.tabview.add("🎵 Extrakce & Konverze Audia")
         self.tab_video = self.tabview.add("🎬 Konverze Videa (MP4 ⇄ MOV)")
         self.tab_yt = self.tabview.add("📥 YouTube Stahovač (MP4 / MOV)")
+        self.tab_reels = self.tabview.add("🔥 Reels Titulky & Overlay (DaVinci)")
         self.tab_ai = self.tabview.add("🤖 AI Přepis & Bionic Studio")
         self.tab_help = self.tabview.add("📖 Návod & Nastavení")
 
         self._build_tab_audio()
         self._build_tab_video()
         self._build_tab_youtube()
+        self._build_tab_reels()
         self._build_tab_ai()
         self._build_tab_help()
 
@@ -671,6 +690,431 @@ class BionicMediaStudioApp(BaseWindow):
         self.btn_run_yt.grid(row=0, column=0, sticky="ew")
 
     # ------------------------------------------------------------------
+    # ZÁLOŽKA 2.8: REELS TITULKY, GEMMA 4 OPRAVA & DAVINCI OVERLAY
+    # ------------------------------------------------------------------
+    def _build_tab_reels(self):
+        tab = self.tab_reels
+        tab.grid_columnconfigure(0, weight=5)
+        tab.grid_columnconfigure(1, weight=6)
+        tab.grid_rowconfigure(0, weight=1)
+
+        # ==================== LEVÁ ČÁST: AI PIPELINE & EDITOR TITULKŮ ====================
+        left_col = ctk.CTkFrame(tab, corner_radius=10)
+        left_col.grid(row=0, column=0, padx=(8, 5), pady=6, sticky="nsew")
+        left_col.grid_columnconfigure(0, weight=1)
+        left_col.grid_rowconfigure(3, weight=1)
+
+        # 1. Časové omezení (Trim)
+        trim_frame = ctk.CTkFrame(left_col, corner_radius=8, fg_color=("#f1f5f9", "#1e293b"))
+        trim_frame.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+        trim_frame.grid_columnconfigure((1, 3, 5), weight=1)
+
+        ctk.CTkLabel(
+            trim_frame,
+            text="⏱️ Časový výřez videa (nepovinné — pro otitulkování jen vybrané části):",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=0, column=0, columnspan=6, padx=10, pady=(8, 4), sticky="w")
+
+        ctk.CTkLabel(trim_frame, text="Od:", font=ctk.CTkFont(size=11)).grid(row=1, column=0, padx=(10, 4), pady=(0, 8), sticky="w")
+        self.entry_reels_start = ctk.CTkEntry(trim_frame, width=68, height=28, placeholder_text="00:00")
+        self.entry_reels_start.insert(0, "00:00")
+        self.entry_reels_start.grid(row=1, column=1, padx=2, pady=(0, 8), sticky="ew")
+
+        ctk.CTkLabel(trim_frame, text="Do:", font=ctk.CTkFont(size=11)).grid(row=1, column=2, padx=(8, 4), pady=(0, 8), sticky="w")
+        self.entry_reels_end = ctk.CTkEntry(trim_frame, width=68, height=28, placeholder_text="Konec")
+        self.entry_reels_end.insert(0, "Konec")
+        self.entry_reels_end.grid(row=1, column=3, padx=2, pady=(0, 8), sticky="ew")
+
+        self.combo_reels_timeline_mode = ctk.CTkOptionMenu(
+            trim_frame,
+            values=[
+                "Začít od 00:00 (Oříznutý klip)",
+                "Původní čas videa (Celá stopa)",
+            ],
+            height=28,
+            width=175,
+            font=ctk.CTkFont(size=11),
+        )
+        self.combo_reels_timeline_mode.grid(row=1, column=4, columnspan=2, padx=(8, 10), pady=(0, 8), sticky="ew")
+
+        # 2. Nastavení AI Přepisu (Whisper Turbo) + Kontextové opravy (Gemma 4 12B QAT)
+        ai_cfg = ctk.CTkFrame(left_col, corner_radius=8, fg_color=("#f8fafc", "#1e293b"))
+        ai_cfg.grid(row=1, column=0, padx=10, pady=4, sticky="ew")
+        ai_cfg.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(ai_cfg, text="Slova na titulek:", font=ctk.CTkFont(size=11, weight="bold")).grid(
+            row=0, column=0, padx=(10, 6), pady=(8, 4), sticky="w"
+        )
+        self.combo_reels_words = ctk.CTkOptionMenu(
+            ai_cfg,
+            values=[
+                "2–3 slova (Dynamické Reels / TikTok - Doporučeno)",
+                "1 slovo (Hormozi Flash styl)",
+                "4–5 slov (Krátké věty)",
+                "6–8 slov (Delší řádky)",
+            ],
+            height=28,
+            font=ctk.CTkFont(size=11),
+        )
+        self.combo_reels_words.grid(row=0, column=1, padx=(0, 10), pady=(8, 4), sticky="ew")
+
+        ctk.CTkLabel(ai_cfg, text="Kontext / Téma:", font=ctk.CTkFont(size=11, weight="bold")).grid(
+            row=1, column=0, padx=(10, 6), pady=4, sticky="w"
+        )
+        self.entry_reels_hint = ctk.CTkEntry(
+            ai_cfg,
+            height=28,
+            placeholder_text="Volitelné: O čem video je / klíčová slova pro přesnější opravu v Gemma 4...",
+            font=ctk.CTkFont(size=11),
+        )
+        self.entry_reels_hint.grid(row=1, column=1, padx=(0, 10), pady=4, sticky="ew")
+
+        self.chk_reels_use_gemma = ctk.CTkCheckBox(
+            ai_cfg,
+            text="🧠 Opravit nesmyslná slova přes lokální Gemma 4 12B QAT podle okolního kontextu",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        self.chk_reels_use_gemma.select()
+        self.chk_reels_use_gemma.grid(row=2, column=0, columnspan=2, padx=10, pady=(4, 8), sticky="w")
+
+        # Tlačítka pro AI přepis a opravu
+        ai_btns = ctk.CTkFrame(left_col, fg_color="transparent")
+        ai_btns.grid(row=2, column=0, padx=10, pady=4, sticky="ew")
+        ai_btns.grid_columnconfigure(0, weight=1)
+
+        self.btn_reels_transcribe = ctk.CTkButton(
+            ai_btns,
+            text="🪄 1. Přepsat (Whisper Turbo) + Opravit (Gemma 4 12B)",
+            height=38,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#7c3aed",
+            hover_color="#6d28d9",
+            command=self._start_reels_transcribe_and_correct,
+        )
+        self.btn_reels_transcribe.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+
+        self.btn_reels_recorrect = ctk.CTkButton(
+            ai_btns,
+            text="🧠 Znovu opravit v Gemma 4",
+            width=165,
+            height=38,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            command=self._start_reels_gemma_only,
+        )
+        self.btn_reels_recorrect.grid(row=0, column=1)
+
+        # 3. Textový editor časovaných Reels bloků
+        ed_frame = ctk.CTkFrame(left_col, corner_radius=8)
+        ed_frame.grid(row=3, column=0, padx=10, pady=(4, 10), sticky="nsew")
+        ed_frame.grid_columnconfigure(0, weight=1)
+        ed_frame.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            ed_frame,
+            text="✏️ Časované Reels titulky (můžete libovolně ručně upravit před exportem):",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).grid(row=0, column=0, padx=8, pady=(6, 2), sticky="w")
+
+        self.txt_reels_editor = ctk.CTkTextbox(
+            ed_frame,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            wrap="word",
+        )
+        self.txt_reels_editor.grid(row=1, column=0, padx=8, pady=(2, 8), sticky="nsew")
+        self.txt_reels_editor.insert(
+            "1.0",
+            "[00:00.20 -> 00:01.50] Ukázka dynamických titulků\n"
+            "[00:01.50 -> 00:03.10] pro Reels a DaVinci Resolve!\n\n"
+            "👉 Jak na to:\n"
+            "1. Vyberte vlevo video nebo audio soubor (případně nastavte čas Od–Do).\n"
+            "2. Klikněte na '🪄 1. Přepsat (Whisper Turbo) + Opravit (Gemma 4 12B)'.\n"
+            "3. Zkontrolujte opravený přepis zde v editoru, vpravo si nastavte vzhled a klikněte na '🎬 2. Vygenerovat Reels Video Overlay'!",
+        )
+
+        # ==================== PRAVÁ ČÁST: STYL, NÁHLED & DAVINCI EXPORT ====================
+        right_col = ctk.CTkFrame(tab, corner_radius=10)
+        right_col.grid(row=0, column=1, padx=(5, 8), pady=6, sticky="nsew")
+        right_col.grid_columnconfigure(0, weight=1)
+        right_col.grid_rowconfigure(1, weight=1)
+
+        # Živý náhled nahoře vpravo
+        preview_box = ctk.CTkFrame(right_col, corner_radius=8, fg_color=("#0f172a", "#0f172a"))
+        preview_box.grid(row=0, column=0, padx=10, pady=(10, 6), sticky="ew")
+        preview_box.grid_columnconfigure(0, weight=1)
+
+        self.lbl_reels_preview = ctk.CTkLabel(preview_box, text="")
+        self.lbl_reels_preview.grid(row=0, column=0, padx=6, pady=6)
+
+        # Scrollovací panel nastavení vzhledu a exportu
+        style_scroll = ctk.CTkScrollableFrame(right_col, corner_radius=8)
+        style_scroll.grid(row=1, column=0, padx=10, pady=4, sticky="nsew")
+        style_scroll.grid_columnconfigure((0, 1), weight=1)
+
+        # Řádek 1: Font & Velikost písma
+        ctk.CTkLabel(style_scroll, text="Font (Písmo):", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=0, column=0, padx=8, pady=(6, 2), sticky="w"
+        )
+        ctk.CTkLabel(style_scroll, text="Velikost písma:", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=0, column=1, padx=8, pady=(6, 2), sticky="w"
+        )
+
+        self.combo_reels_font = ctk.CTkOptionMenu(
+            style_scroll,
+            values=[
+                "Arial Black",
+                "Impact",
+                "Segoe UI Bold",
+                "Trebuchet MS",
+                "Verdana",
+                "Tahoma",
+                "Franklin Gothic Medium",
+                "Calibri",
+                "Consolas",
+                "Comic Sans MS",
+            ],
+            height=30,
+            command=lambda _: self._update_reels_preview(),
+        )
+        self.combo_reels_font.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
+
+        self.combo_reels_fontsize = ctk.CTkOptionMenu(
+            style_scroll,
+            values=[
+                "52 px (Menší)",
+                "64 px (Střední)",
+                "76 px (Doporučeno pro Reels)",
+                "88 px (Velké)",
+                "100 px (Extra výrazné)",
+                "115 px (Obří Hormozi styl)",
+            ],
+            height=30,
+            command=lambda _: self._update_reels_preview(),
+        )
+        self.combo_reels_fontsize.set("76 px (Doporučeno pro Reels)")
+        self.combo_reels_fontsize.grid(row=1, column=1, padx=8, pady=(0, 8), sticky="ew")
+
+        # Řádek 2: Hlavní barva textu & Barva zvýrazněného slova (Karaoke)
+        ctk.CTkLabel(style_scroll, text="Hlavní barva textu:", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=2, column=0, padx=8, pady=(4, 2), sticky="w"
+        )
+        ctk.CTkLabel(style_scroll, text="Barva aktivního slova (Karaoke):", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=2, column=1, padx=8, pady=(4, 2), sticky="w"
+        )
+
+        p_col_frame = ctk.CTkFrame(style_scroll, fg_color="transparent")
+        p_col_frame.grid(row=3, column=0, padx=8, pady=(0, 8), sticky="ew")
+        p_col_frame.grid_columnconfigure(0, weight=1)
+
+        self.combo_reels_pcolor = ctk.CTkOptionMenu(
+            p_col_frame,
+            values=[
+                "Bílá (#FFFFFF)",
+                "Žlutá (#FFD700)",
+                "Azurová (#00FFFF)",
+                "Světle zelená (#4ADE80)",
+                "Oranžová (#FF8800)",
+                "Růžová (#F472B6)",
+            ],
+            height=30,
+            command=self._on_preset_pcolor,
+        )
+        self.combo_reels_pcolor.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.btn_pick_pcolor = ctk.CTkButton(
+            p_col_frame, text="🎨", width=34, height=30, command=lambda: self._pick_reels_color("primary")
+        )
+        self.btn_pick_pcolor.grid(row=0, column=1)
+
+        h_col_frame = ctk.CTkFrame(style_scroll, fg_color="transparent")
+        h_col_frame.grid(row=3, column=1, padx=8, pady=(0, 8), sticky="ew")
+        h_col_frame.grid_columnconfigure(0, weight=1)
+
+        self.combo_reels_hcolor = ctk.CTkOptionMenu(
+            h_col_frame,
+            values=[
+                "Žlutá (#FFE600)",
+                "Zářivě zelená (#00FF66)",
+                "Azurová (#00E5FF)",
+                "Červeno-růžová (#FF3366)",
+                "Oranžová (#FF6600)",
+                "Bílá (#FFFFFF)",
+            ],
+            height=30,
+            command=self._on_preset_hcolor,
+        )
+        self.combo_reels_hcolor.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.btn_pick_hcolor = ctk.CTkButton(
+            h_col_frame, text="🎨", width=34, height=30, command=lambda: self._pick_reels_color("highlight")
+        )
+        self.btn_pick_hcolor.grid(row=0, column=1)
+
+        # Řádek 3: Obrys (Tloušťka + Barva) & Pozice na obrazovce
+        ctk.CTkLabel(style_scroll, text="Tloušťka a barva obrysu:", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=4, column=0, padx=8, pady=(4, 2), sticky="w"
+        )
+        ctk.CTkLabel(style_scroll, text="Pozice a výška titulků:", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=4, column=1, padx=8, pady=(4, 2), sticky="w"
+        )
+
+        o_col_frame = ctk.CTkFrame(style_scroll, fg_color="transparent")
+        o_col_frame.grid(row=5, column=0, padx=8, pady=(0, 8), sticky="ew")
+        o_col_frame.grid_columnconfigure(0, weight=1)
+
+        self.combo_reels_outline = ctk.CTkOptionMenu(
+            o_col_frame,
+            values=[
+                "6 px (Výrazný Reels obrys)",
+                "8 px (Extra silný obrys)",
+                "4 px (Střední obrys)",
+                "2 px (Jemný obrys)",
+                "0 px (Bez obrysu)",
+            ],
+            height=30,
+            command=lambda _: self._update_reels_preview(),
+        )
+        self.combo_reels_outline.grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        self.btn_pick_ocolor = ctk.CTkButton(
+            o_col_frame, text="🎨", width=34, height=30, command=lambda: self._pick_reels_color("outline")
+        )
+        self.btn_pick_ocolor.grid(row=0, column=1)
+
+        pos_frame = ctk.CTkFrame(style_scroll, fg_color="transparent")
+        pos_frame.grid(row=5, column=1, padx=8, pady=(0, 8), sticky="ew")
+        pos_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.combo_reels_pos = ctk.CTkOptionMenu(
+            pos_frame,
+            values=[
+                "Dole (Reels standard)",
+                "Uprostřed obrazovky (Center)",
+                "Horní třetina (Top)",
+            ],
+            height=30,
+            command=lambda _: self._update_reels_preview(),
+        )
+        self.combo_reels_pos.grid(row=0, column=0, padx=(0, 3), sticky="ew")
+
+        self.combo_reels_marginv = ctk.CTkOptionMenu(
+            pos_frame,
+            values=[
+                "260 px (Safe Zone)",
+                "380 px (Výše)",
+                "160 px (Níže)",
+                "80 px (U kraje)",
+            ],
+            height=30,
+            command=lambda _: self._update_reels_preview(),
+        )
+        self.combo_reels_marginv.grid(row=0, column=1, padx=(3, 0), sticky="ew")
+
+        # Řádek 4: Efekty (Checkboxes)
+        fx_frame = ctk.CTkFrame(style_scroll, corner_radius=8, fg_color=("#f1f5f9", "#1e293b"))
+        fx_frame.grid(row=6, column=0, columnspan=2, padx=8, pady=4, sticky="ew")
+        fx_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.chk_reels_karaoke = ctk.CTkCheckBox(
+            fx_frame,
+            text="Karaoke zvýrazňování aktivního slova",
+            font=ctk.CTkFont(size=11),
+            command=self._update_reels_preview,
+        )
+        self.chk_reels_karaoke.select()
+        self.chk_reels_karaoke.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="w")
+
+        self.chk_reels_caps = ctk.CTkCheckBox(
+            fx_frame,
+            text="VELKÁ PÍSMENA (ALL CAPS)",
+            font=ctk.CTkFont(size=11),
+            command=self._update_reels_preview,
+        )
+        self.chk_reels_caps.select()
+        self.chk_reels_caps.grid(row=0, column=1, padx=10, pady=(8, 4), sticky="w")
+
+        self.chk_reels_pop = ctk.CTkCheckBox(
+            fx_frame,
+            text="Pop-in animace při nástupu titulku",
+            font=ctk.CTkFont(size=11),
+        )
+        self.chk_reels_pop.select()
+        self.chk_reels_pop.grid(row=1, column=0, padx=10, pady=(2, 8), sticky="w")
+
+        self.chk_reels_box = ctk.CTkCheckBox(
+            fx_frame,
+            text="Tmavý obdélníkový box pod textem",
+            font=ctk.CTkFont(size=11),
+            command=self._update_reels_preview,
+        )
+        self.chk_reels_box.grid(row=1, column=1, padx=10, pady=(2, 8), sticky="w")
+
+        # Řádek 5: Rozlišení videa a FPS
+        ctk.CTkLabel(style_scroll, text="Cílové rozlišení a poměr stran:", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=7, column=0, padx=8, pady=(8, 2), sticky="w"
+        )
+        ctk.CTkLabel(style_scroll, text="Snímková frekvence (FPS):", font=ctk.CTkFont(size=12, weight="bold")).grid(
+            row=7, column=1, padx=8, pady=(8, 2), sticky="w"
+        )
+
+        self.combo_reels_res = ctk.CTkOptionMenu(
+            style_scroll,
+            values=[
+                "9:16 Vertikální - 1080x1920 (Full HD Reels / TikTok / Shorts)",
+                "9:16 Vertikální - 2160x3840 (4K Reels / Shorts)",
+                "16:9 Horizontální - 1920x1080 (Full HD YouTube / Klasické)",
+                "16:9 Horizontální - 3840x2160 (4K YouTube)",
+                "1:1 Čtverec - 1080x1080 (Instagram Feed)",
+                "4:5 Portrét - 1080x1350 (Instagram Portrait)",
+                "Podle zdrojového videa (Zachovat původní rozlišení)",
+            ],
+            height=30,
+            command=lambda _: self._update_reels_preview(),
+        )
+        self.combo_reels_res.grid(row=8, column=0, padx=8, pady=(0, 8), sticky="ew")
+
+        self.combo_reels_fps = ctk.CTkOptionMenu(
+            style_scroll,
+            values=["30 fps (Standard)", "60 fps (Plynulý pohyb)", "25 fps (PAL)", "24 fps (Film)"],
+            height=30,
+        )
+        self.combo_reels_fps.grid(row=8, column=1, padx=8, pady=(0, 8), sticky="ew")
+
+        # Řádek 6: Režim exportu pro DaVinci Resolve / Přímé vypálení
+        ctk.CTkLabel(
+            style_scroll,
+            text="🎬 Režim exportu (DaVinci Resolve Overlay nebo Přímé vypálení do videa):",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=9, column=0, columnspan=2, padx=8, pady=(4, 2), sticky="w")
+
+        self.combo_reels_export_mode = ctk.CTkOptionMenu(
+            style_scroll,
+            values=[
+                "DaVinci Resolve Overlay: Průhledné .MOV (Alpha kanál - vložte rovnou do stopy V2 nad video)",
+                "DaVinci Resolve Overlay: Černé pozadí .MP4 (v DaVinci: Composite Mode -> Screen / Add)",
+                "DaVinci Resolve Overlay: Zelené plátno .MP4 (Green Screen #00FF00 pro 3D Keyer)",
+                "Přímé vypálení do videa: Hotové .MP4 s titulky přímo v obraze (Burn-in)",
+                "Přímé vypálení do videa: Hotové .MOV s titulky přímo v obraze (Burn-in)",
+                "Pouze titulkové soubory .ASS + .SRT (pro přímý import do Subtitle Tracku)",
+            ],
+            height=32,
+        )
+        self.combo_reels_export_mode.grid(row=10, column=0, columnspan=2, padx=8, pady=(0, 10), sticky="ew")
+
+        # Hlavní tlačítko pro vygenerování Overlaye
+        self.btn_reels_export = ctk.CTkButton(
+            right_col,
+            text="🎬 2. Vygenerovat Reels Video Overlay / Titulky",
+            height=46,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color="#e11d48",
+            hover_color="#be123c",
+            command=self._start_reels_export,
+        )
+        self.btn_reels_export.grid(row=2, column=0, padx=10, pady=(4, 10), sticky="ew")
+
+        # Vykreslit výchozí náhled
+        self._update_reels_preview()
+
+    # ------------------------------------------------------------------
     # ZÁLOŽKA 3: AI PŘEPIS (WHISPER) & BIONIC STUDIO
     # ------------------------------------------------------------------
     def _build_tab_ai(self):
@@ -943,6 +1387,48 @@ Jak propojit aplikaci s Bionic / LM Studiem:
 2. Načtěte svůj oblíbený lokální LLM model (např. Gemma-4-12B, Qwen-3.8).
 3. V naší aplikaci klikněte na „🔄 Otestovat spojení“ – rozsvítí se zelený stav „Připojeno“.
 4. Vyberte požadovaný úkol (Shrnutí, Článek, Akční body, Překlad) a klikněte na „✨ Zpracovat v Bionic Studiu“.
+--------------------------------------------------------------------
+6. 🔥 REELS TITULKY, OPRAVA PŘES GEMMA 4 12B A DAVINCI RESOLVE OVERLAY
+--------------------------------------------------------------------
+Záložka „🔥 Reels Titulky & Overlay (DaVinci)“ propojuje lokální model Whisper Turbo, jazykový model Gemma 4 12B QAT a generátor dynamických titulků ve stylu Reels / TikTok / Shorts:
+
+KROK 1: Časový výřez a dvoustupňový AI přepis (Whisper ➔ Gemma 4 12B QAT)
+• Chcete-li otitulkovat jen určitou část videa, zadejte vlevo nahoře čas „Od“ (např. `00:15`) a „Do“ (např. `00:55`).
+  - Režim „Začít od 00:00 (Oříznutý klip)“ přečísluje vyexportovaný overlay tak, aby začínal od nuly.
+  - Režim „Původní čas videa (Celá stopa)“ zachová původní časovou osu videa, takže overlay sedne přesně na danou minutu a sekundu v celém videu.
+• Volitelně napište do pole „Kontext / Téma“ pár klíčových slov (např. názvy produktů, her nebo odborné pojmy).
+• Klikněte na „🪄 1. Přepsat (Whisper Turbo) + Opravit (Gemma 4 12B)“:
+  1) Whisper Turbo nejprve na RTX 5060 Ti vytvoří přepis s přesným časováním každého jednotlivého slova (word-level timestamps) a rozdělí ho na krátké dynamické bloky (např. po 2–3 slovech).
+  2) Celý přepis se následně odešle do vašeho lokálního modelu `google/gemma-4-12b-qat` v Bionic Studiu, který podle okolního kontextu opraví přeslechnutá nebo nesmyslná slova při zachování přesného časování.
+• V textovém editoru vlevo dole pak můžete jakýkoliv řádek ještě ručně doladit.
+
+KROK 2: Vzhled titulků a živý náhled
+• Vpravo nahoře vidíte živý náhled titulku v reálném čase.
+• Můžete měnit:
+  - Font (Arial Black, Impact, Segoe UI Bold, Trebuchet MS, Verdana, Tahoma...), velikost písma, tloušťku a barvu obrysu.
+  - Hlavní barvu textu a barvu právě vyslovovaného slova (Karaoke efekt) včetně vlastního kapátka/palety barev (tlačítko 🎨).
+  - Pozici na obrazovce (Dole, Uprostřed, Nahoře), výšku od okraje, VELKÁ PÍSMENA (ALL CAPS), Pop-in animaci při nástupu titulku nebo tmavý podkladový box.
+  - Cílové rozlišení a poměr stran: 9:16 Vertikální (1080×1920 nebo 4K 2160×3840 pro Reels/Shorts/TikTok), 16:9 Horizontální (1920×1080 nebo 4K pro YouTube), 1:1 Čtverec, 4:5 Portrét nebo Původní rozlišení zdrojového videa.
+
+KROK 3: Jak vložit vygenerované titulky do DaVinci Resolve (3 snadné způsoby)
+Klikněte na „🎬 2. Vygenerovat Reels Video Overlay / Titulky“. Podle zvoleného režimu exportu postupujte v DaVinci Resolve takto:
+
+  🅰️ ZPŮSOB 1 (DOPORUČENO – Nejjednodušší a 100% kvalita):
+     Režim: „DaVinci Resolve Overlay: Průhledné .MOV (Alpha kanál)“
+     1. V DaVinci Resolve otevřete záložku Edit.
+     2. Na stopu Video 1 (V1) vložte své původní video.
+     3. Vygenerovaný soubor `..._reels_overlay_alpha.mov` přetáhněte myší přímo nad něj do stopy Video 2 (V2).
+     4. Hotovo! Soubor obsahuje přímý průhledný Alfa kanál (QuickTime Animation ARGB), takže titulky včetně animací, obrysů, stínů a Karaoke zvýraznění okamžitě visí nad původním videem bez nutnosti jakéhokoliv klíčování.
+
+  🅱️ ZPŮSOB 2 (Extrémně malý soubor přes GPU NVENC):
+     Režim: „DaVinci Resolve Overlay: Černé pozadí .MP4“
+     1. Vložte vygenerovaný `.mp4` soubor v DaVinci Resolve do stopy Video 2 (V2) nad původní video.
+     2. Označte klip ve stopě V2, vpravo nahoře otevřete „Inspector“ -> sekce „Composite“ a změňte „Composite Mode“ z Normal na „Screen“ nebo „Add“. Černé pozadí zmizí a zůstanou jen titulky.
+
+  🅲 ZPŮSOB 3 (Zelené plátno / Green Screen nebo přímé vypálení):
+     • Při volbě „Zelené plátno .MP4 (#00FF00)“ vložte klip do V2 a v záložce Edit / Fusion použijte efekt „3D Keyer“ (klikněte kapátkem na zelenou).
+     • Při volbě „Přímé vypálení do videa (Burn-in)“ program rovnou vyrenderuje kompletní hotové video s titulky vypálenými přímo do obrazu (nepotřebujete vůbec otevírat střihový program).
+     • Současně se vždy vedle videa automaticky uloží i soubory `.ASS` a `.SRT`, které můžete v DaVinci Resolve naimportovat přes `File -> Import -> Subtitle`.
 """
         help_box.insert("1.0", guide_text)
         help_box.configure(state="disabled")
@@ -1075,6 +1561,7 @@ Jak propojit aplikaci s Bionic / LM Studiem:
 
         def _worker():
             info = probe_media_info(fpath)
+            self.selected_file_info = info
             txt = (
                 f"📄 {os.path.basename(fpath)}\n"
                 f"⏱️ Délka: {info['duration_str']}  |  📦 Velikost: {info['size_mb']} MB\n"
@@ -1118,6 +1605,9 @@ Jak propojit aplikaci s Bionic / LM Studiem:
         self.btn_run_video.configure(state=state)
         self.btn_run_yt.configure(state=state)
         self.btn_probe_yt.configure(state=state)
+        self.btn_reels_transcribe.configure(state=state)
+        self.btn_reels_recorrect.configure(state=state)
+        self.btn_reels_export.configure(state=state)
         self.btn_transcribe.configure(state=state)
         self.btn_send_bionic.configure(state=state)
         self.btn_add_files.configure(state=state)
@@ -1525,6 +2015,322 @@ Jak propojit aplikaci s Bionic / LM Studiem:
                 else:
                     self._set_busy(False, "❌ Nelze zpracovat v Bionic Studiu.")
                     messagebox.showerror("Bionic Studio nedostupné", result_text)
+
+            self.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # AKCE 5: REELS TITULKY, GEMMA 4 12B KONTEXTOVÁ OPRAVA & DAVINCI OVERLAY
+    # ------------------------------------------------------------------
+    def _on_preset_pcolor(self, choice: str):
+        import re
+        m = re.search(r"#([0-9A-Fa-f]{6})", choice)
+        if m:
+            self.reels_primary_hex = "#" + m.group(1).upper()
+            self._update_reels_preview()
+
+    def _on_preset_hcolor(self, choice: str):
+        import re
+        m = re.search(r"#([0-9A-Fa-f]{6})", choice)
+        if m:
+            self.reels_highlight_hex = "#" + m.group(1).upper()
+            self._update_reels_preview()
+
+    def _pick_reels_color(self, target: str):
+        initial = (
+            self.reels_primary_hex if target == "primary"
+            else (self.reels_highlight_hex if target == "highlight" else self.reels_outline_hex)
+        )
+        rgb, hex_val = colorchooser.askcolor(color=initial, title="Vyberte barvu pro Reels titulky")
+        if hex_val:
+            hex_clean = hex_val.upper()
+            if target == "primary":
+                self.reels_primary_hex = hex_clean
+                self.combo_reels_pcolor.set(f"Vlastní ({hex_clean})")
+            elif target == "highlight":
+                self.reels_highlight_hex = hex_clean
+                self.combo_reels_hcolor.set(f"Vlastní ({hex_clean})")
+            else:
+                self.reels_outline_hex = hex_clean
+            self._update_reels_preview()
+
+    def _resolve_reels_resolution(self) -> tuple[int, int]:
+        res_choice = self.combo_reels_res.get()
+        if "2160x3840" in res_choice:
+            return 2160, 3840
+        if "1920x1080" in res_choice:
+            return 1920, 1080
+        if "3840x2160" in res_choice:
+            return 3840, 2160
+        if "1080x1080" in res_choice:
+            return 1080, 1080
+        if "1080x1350" in res_choice:
+            return 1080, 1350
+        if "Podle zdrojového" in res_choice and self.selected_file_info:
+            w = int(self.selected_file_info.get("width") or 1080)
+            h = int(self.selected_file_info.get("height") or 1920)
+            return w, h
+        return 1080, 1920
+
+    def _get_current_reels_style(self) -> ReelsSubtitleStyle:
+        font_name = self.combo_reels_font.get()
+        font_size = int(self.combo_reels_fontsize.get().split(" ")[0])
+        outline_w = int(self.combo_reels_outline.get().split(" ")[0])
+        margin_v = int(self.combo_reels_marginv.get().split(" ")[0])
+        w_px, h_px = self._resolve_reels_resolution()
+
+        # Škálovat velikost písma, pokud uživatel zvolí 4K rozlišení
+        scale_factor = max(w_px, h_px) / 1920.0
+        scaled_font_size = max(24, int(round(font_size * scale_factor)))
+        scaled_outline = max(0, int(round(outline_w * scale_factor)))
+        scaled_margin_v = max(20, int(round(margin_v * scale_factor)))
+
+        return ReelsSubtitleStyle(
+            font_name=font_name,
+            font_size=scaled_font_size,
+            primary_color=self.reels_primary_hex,
+            highlight_color=self.reels_highlight_hex,
+            outline_color=self.reels_outline_hex,
+            outline_width=scaled_outline,
+            shadow_depth=3 if scaled_outline > 0 else 0,
+            box_background=bool(self.chk_reels_box.get()),
+            uppercase=bool(self.chk_reels_caps.get()),
+            karaoke_highlight=bool(self.chk_reels_karaoke.get()),
+            pop_animation=bool(self.chk_reels_pop.get()),
+            alignment=self.combo_reels_pos.get(),
+            margin_v=scaled_margin_v,
+            play_res_x=w_px,
+            play_res_y=h_px,
+        )
+
+    def _update_reels_preview(self):
+        try:
+            style = self._get_current_reels_style()
+            pil_img = render_style_preview_image(style, preview_size=(360, 135))
+            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(360, 135))
+            self.lbl_reels_preview.configure(image=ctk_img, text="")
+            self.lbl_reels_preview._image_ref = ctk_img
+        except Exception:
+            pass
+
+    def _get_max_words_choice(self) -> int:
+        val = self.combo_reels_words.get()
+        if val.startswith("1 "):
+            return 1
+        if val.startswith("2–3"):
+            return 3
+        if val.startswith("4–5"):
+            return 5
+        return 7
+
+    def _start_reels_transcribe_and_correct(self):
+        target_file = self.selected_file or (self.files[0] if self.files else None)
+        if not target_file or not os.path.exists(target_file):
+            messagebox.showwarning("Žádný soubor", "Nejprve prosím vyberte vlevo video nebo audio soubor.")
+            return
+
+        self._save_settings()
+        model_size = self.combo_whisper_model.get()
+        lang = self.combo_whisper_lang.get()
+        device_pref = self.combo_whisper_device.get()
+        max_words = self._get_max_words_choice()
+        use_gemma = bool(self.chk_reels_use_gemma.get())
+        hint_text = self.entry_reels_hint.get().strip()
+
+        t_start = parse_time_input(self.entry_reels_start.get())
+        t_end = parse_time_input(self.entry_reels_end.get())
+
+        self.cancel_event.clear()
+        self._set_busy(True, f"🎙️ Spouštím Whisper Turbo s word-level časováním pro {os.path.basename(target_file)}...")
+        self.progress_bar.set(0.02)
+        self.txt_reels_editor.delete("1.0", "end")
+
+        def _on_prog(frac: float, msg: str):
+            scaled = frac * (0.55 if use_gemma else 1.0)
+            self.after(0, lambda: self.progress_bar.set(scaled))
+            self.after(0, lambda: self.lbl_status.configure(text=msg))
+
+        def _worker():
+            try:
+                res = self.transcriber.transcribe(
+                    media_path=target_file,
+                    model_size=model_size,
+                    language=lang,
+                    device_preference=device_pref,
+                    word_timestamps=True,
+                    trim_start_sec=t_start,
+                    trim_end_sec=t_end,
+                    progress_callback=_on_prog,
+                    cancel_event=self.cancel_event,
+                )
+
+                chunks = group_words_into_reels_chunks(
+                    res.segments,
+                    max_words_per_chunk=max_words,
+                )
+                self.reels_chunks = chunks
+                initial_editor_txt = format_chunks_for_editor(chunks)
+                self.after(0, lambda t=initial_editor_txt: self._set_reels_editor_text(t))
+
+                status_note = f"✅ Whisper přepsal {len(chunks)} Reels titulků."
+                if use_gemma and chunks and not self.cancel_event.is_set():
+                    ok_g, corrected_chunks, g_msg = correct_chunks_with_gemma(
+                        chunks=chunks,
+                        bionic_client=self.bionic_client,
+                        custom_hint=hint_text,
+                        progress_callback=lambda f, m: (
+                            self.after(0, lambda: self.progress_bar.set(f)),
+                            self.after(0, lambda: self.lbl_status.configure(text=m)),
+                        ),
+                    )
+                    if ok_g:
+                        self.reels_chunks = corrected_chunks
+                        corr_txt = format_chunks_for_editor(corrected_chunks)
+                        self.after(0, lambda t=corr_txt: self._set_reels_editor_text(t))
+                        status_note = f"✅ Hotovo! {g_msg}"
+                    else:
+                        status_note = f"✅ Whisper hotov ({len(chunks)} titulků). Info z Gemmy: {g_msg}"
+
+                self.after(0, lambda: self.progress_bar.set(1.0))
+                self.after(0, lambda s=status_note: self._set_busy(False, s))
+
+            except Exception as e:
+                self.after(0, lambda: self._set_busy(False, f"❌ Chyba při přípravě Reels titulků: {str(e)}"))
+                if not self.cancel_event.is_set():
+                    self.after(0, lambda err=str(e): messagebox.showerror("Chyba", err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _set_reels_editor_text(self, text: str):
+        self.txt_reels_editor.delete("1.0", "end")
+        self.txt_reels_editor.insert("1.0", text)
+
+    def _start_reels_gemma_only(self):
+        raw_editor = self.txt_reels_editor.get("1.0", "end").strip()
+        chunks = parse_chunks_from_editor(raw_editor, self.reels_chunks)
+        if not chunks:
+            messagebox.showwarning("Žádné titulky", "V editoru nejsou žádné časované titulky [MM:SS -> MM:SS]. Nejprve spusťte přepis.")
+            return
+
+        hint_text = self.entry_reels_hint.get().strip()
+        self.cancel_event.clear()
+        self._set_busy(True, "🧠 Odesílám titulky do lokálního modelu Gemma 4 12B QAT ke kontextové opravě...")
+        self.progress_bar.set(0.3)
+
+        def _worker():
+            ok_g, corrected_chunks, g_msg = correct_chunks_with_gemma(
+                chunks=chunks,
+                bionic_client=self.bionic_client,
+                custom_hint=hint_text,
+            )
+
+            def _done():
+                self.progress_bar.set(1.0 if ok_g else 0.0)
+                if ok_g:
+                    self.reels_chunks = corrected_chunks
+                    self._set_reels_editor_text(format_chunks_for_editor(corrected_chunks))
+                    self._set_busy(False, f"✅ {g_msg}")
+                else:
+                    self._set_busy(False, f"❌ {g_msg}")
+                    messagebox.showwarning("Gemma 4 12B korektura", g_msg)
+
+            self.after(0, _done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_reels_export(self):
+        raw_editor = self.txt_reels_editor.get("1.0", "end").strip()
+        chunks = parse_chunks_from_editor(raw_editor, self.reels_chunks)
+        if not chunks:
+            messagebox.showwarning(
+                "Žádné titulky",
+                "Nejprve prosím spusťte krok '1. Přepsat (Whisper Turbo) + Opravit (Gemma 4 12B)' vlevo.",
+            )
+            return
+
+        self.reels_chunks = chunks
+        target_file = self.selected_file or (self.files[0] if self.files else None)
+        export_mode = self.combo_reels_export_mode.get()
+        fps = int(self.combo_reels_fps.get().split(" ")[0])
+        style = self._get_current_reels_style()
+
+        t_start = parse_time_input(self.entry_reels_start.get())
+        t_end = parse_time_input(self.entry_reels_end.get())
+        reset_zero = "00:00" in self.combo_reels_timeline_mode.get()
+
+        # Určit příponu a výchozí název výstupního souboru
+        if "Průhledné .MOV" in export_mode or "Hotové .MOV" in export_mode:
+            ext = "mov"
+            tag = "_reels_overlay_alpha" if "Průhledné" in export_mode else "_reels_subtitled"
+        elif "Pouze titulkové" in export_mode:
+            ext = "ass"
+            tag = "_reels_subtitles"
+        else:
+            ext = "mp4"
+            if "Černé pozadí" in export_mode:
+                tag = "_reels_overlay_black"
+            elif "Zelené plátno" in export_mode:
+                tag = "_reels_overlay_greenscreen"
+            else:
+                tag = "_reels_subtitled"
+
+        if target_file and os.path.exists(target_file):
+            out_path = self._resolve_output_path(target_file, ext, suffix_tag=tag)
+            total_dur = float(self.selected_file_info.get("duration_sec") or 0.0)
+            if total_dur <= 0:
+                info = probe_media_info(target_file)
+                total_dur = float(info.get("duration_sec") or 0.0)
+        else:
+            out_folder = self._get_youtube_download_folder()
+            out_path = os.path.join(out_folder, f"reels_overlay{tag}.{ext}")
+            total_dur = max(ch["end"] for ch in chunks) + 0.5
+
+        if total_dur <= 0:
+            total_dur = max(ch["end"] for ch in chunks) + 0.5
+
+        self.cancel_event.clear()
+        self._set_busy(True, f"🎬 Generuji Reels Video Overlay ({os.path.basename(out_path)})...")
+        self.progress_bar.set(0.05)
+
+        def _on_prog(frac: float, msg: str):
+            self.after(0, lambda: self.progress_bar.set(frac))
+            self.after(0, lambda: self.lbl_status.configure(text=msg))
+
+        def _worker():
+            ok, msg_or_path = render_reels_video_overlay(
+                chunks=chunks,
+                style=style,
+                output_path=out_path,
+                export_mode=export_mode,
+                total_duration_sec=total_dur,
+                fps=fps,
+                source_video_path=target_file,
+                trim_start_sec=t_start,
+                trim_end_sec=t_end,
+                reset_timeline_to_zero=reset_zero,
+                progress_callback=_on_prog,
+                cancel_event=self.cancel_event,
+            )
+
+            def _done():
+                self.progress_bar.set(1.0 if ok else 0.0)
+                if ok:
+                    self._set_busy(False, f"✅ Reels Overlay vyexportován: {out_path}")
+                    davinci_tip = (
+                        "\n\n💡 TIP PRO DAVINCI RESOLVE:\n"
+                        "• Průhledné .MOV: Přetáhněte soubor rovnou do Video Track 2 (V2) nad vaše původní video – pozadí je již 100% průhledné!\n"
+                        "• Černé pozadí .MP4: Vložte do V2 a v Inspectoru -> Composite Mode zvolte 'Screen' nebo 'Add'.\n"
+                        "• Současně byly vedle videa uloženy i titulkové soubory .ASS a .SRT."
+                    )
+                    messagebox.showinfo(
+                        "Reels Titulky & Overlay hotovy!",
+                        f"Výstup byl úspěšně uložen:\n{msg_or_path}{davinci_tip}",
+                    )
+                else:
+                    self._set_busy(False, f"❌ Chyba při renderu Reels titulků: {msg_or_path}")
+                    if not self.cancel_event.is_set():
+                        messagebox.showerror("Chyba při generování Reels Overlaye", msg_or_path)
 
             self.after(0, _done)
 
