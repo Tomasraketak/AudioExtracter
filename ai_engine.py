@@ -53,6 +53,15 @@ def _register_nvidia_dll_paths():
                     os.add_dll_directory(bin_path)
                 except Exception:
                     pass
+            # Explicitně přednačíst CUDA 12 knihovny do paměti procesu přes ctypes
+            try:
+                import ctypes
+                for dll_name in ("cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll"):
+                    dll_full = os.path.join(bin_path, dll_name)
+                    if os.path.isfile(dll_full):
+                        ctypes.WinDLL(dll_full)
+            except Exception:
+                pass
 
 
 _register_nvidia_dll_paths()
@@ -296,13 +305,45 @@ class WhisperTranscriber:
             if language and not language.startswith("Auto"):
                 lang_code = language.split(" ")[0].strip().lower()
 
-            segments_gen, info = self._loaded_model.transcribe(
-                tmp_wav,
-                language=lang_code,
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=500),
-            )
+            import itertools
+            try:
+                segments_gen, info = self._loaded_model.transcribe(
+                    tmp_wav,
+                    language=lang_code,
+                    beam_size=5,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=500),
+                )
+                first_item = next(segments_gen, None)
+                if first_item is not None:
+                    segments_gen = itertools.chain([first_item], segments_gen)
+                else:
+                    segments_gen = iter([])
+            except Exception as runtime_cuda_err:
+                if device == "cuda" and ("cublas" in str(runtime_cuda_err).lower() or "cuda" in str(runtime_cuda_err).lower() or "cudnn" in str(runtime_cuda_err).lower()):
+                    if progress_callback:
+                        progress_callback(0.14, f"CUDA knihovna nebyla nalezena ({runtime_cuda_err}), přepínám na CPU (Ryzen 9600)...")
+                    device = "cpu"
+                    compute_type = "int8"
+                    model_key = f"{actual_model_id}:cpu:int8"
+                    self._loaded_model = WhisperModel(
+                        actual_model_id,
+                        device="cpu",
+                        compute_type="int8",
+                        download_root=None if is_local else self.cache_dir,
+                        local_files_only=is_local,
+                        cpu_threads=8,
+                    )
+                    self._loaded_model_key = model_key
+                    segments_gen, info = self._loaded_model.transcribe(
+                        tmp_wav,
+                        language=lang_code,
+                        beam_size=5,
+                        vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500),
+                    )
+                else:
+                    raise
 
             total_dur = info.duration if info.duration and info.duration > 0 else 1.0
             collected_segments = []
