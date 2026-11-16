@@ -24,14 +24,17 @@ def _register_nvidia_dll_paths():
     extra_dll_dirs = []
 
     # 1. Bionic Studio / LM Studio CUDA 12 vendor knihovny
-    home = Path.home()
-    lms_backends = home / ".lmstudio" / "extensions" / "backends"
-    if lms_backends.is_dir():
-        for root, _, files in os.walk(lms_backends):
-            for f in files:
-                if f.lower() in {"cublas64_12.dll", "cudart64_12.dll"}:
-                    extra_dll_dirs.append(root)
-                    break
+    try:
+        home = Path.home()
+        lms_backends = home / ".lmstudio" / "extensions" / "backends"
+        if lms_backends.is_dir():
+            for root, _, files in os.walk(lms_backends):
+                for f in files:
+                    if f.lower() in {"cublas64_12.dll", "cudart64_12.dll"}:
+                        extra_dll_dirs.append(root)
+                        break
+    except Exception:
+        pass
 
     # 2. Případné nvidia balíčky ve venvu
     try:

@@ -27,6 +27,7 @@ from ai_engine import (
     format_timestamp_short,
     detect_bionic_server_url,
 )
+from youtube_engine import fetch_youtube_info, download_youtube_media
 
 # Nastavení vzhledu
 ctk.set_appearance_mode("Dark")
@@ -274,11 +275,13 @@ class BionicMediaStudioApp(BaseWindow):
 
         self.tab_audio = self.tabview.add("🎵 Extrakce & Konverze Audia")
         self.tab_video = self.tabview.add("🎬 Konverze Videa (MP4 ⇄ MOV)")
+        self.tab_yt = self.tabview.add("📥 YouTube Stahovač (MP4 / MOV)")
         self.tab_ai = self.tabview.add("🤖 AI Přepis & Bionic Studio")
         self.tab_help = self.tabview.add("📖 Návod & Nastavení")
 
         self._build_tab_audio()
         self._build_tab_video()
+        self._build_tab_youtube()
         self._build_tab_ai()
         self._build_tab_help()
 
@@ -526,6 +529,146 @@ class BionicMediaStudioApp(BaseWindow):
             command=self._start_video_conversion,
         )
         self.btn_run_video.grid(row=0, column=0, sticky="ew")
+
+    # ------------------------------------------------------------------
+    # ZÁLOŽKA 2.5: YOUTUBE STAHOVAČ (MP4 / MOV / AUDIO)
+    # ------------------------------------------------------------------
+    def _build_tab_youtube(self):
+        tab = self.tab_yt
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_columnconfigure(1, weight=1)
+
+        intro = ctk.CTkFrame(tab, corner_radius=10, fg_color=("#eff6ff", "#1e293b"))
+        intro.grid(row=0, column=0, columnspan=2, padx=14, pady=(10, 12), sticky="ew")
+        ctk.CTkLabel(
+            intro,
+            text=(
+                "📥 Stahujte videa nebo samotný zvuk přímo z YouTube podle odkazu do formátů MP4, MOV, MKV, MP3, AAC nebo WAV.\n"
+                "• Po stažení se soubor automaticky přidá do levé fronty, takže z něj můžete hned udělat AI přepis nebo konverzi!"
+            ),
+            font=ctk.CTkFont(size=12),
+            wraplength=720,
+            justify="left",
+        ).pack(padx=14, pady=10, anchor="w")
+
+        # Pole pro vložení odkazu
+        url_frame = ctk.CTkFrame(tab, corner_radius=10)
+        url_frame.grid(row=1, column=0, columnspan=2, padx=14, pady=6, sticky="ew")
+        url_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            url_frame,
+            text="🔗 Odkaz na YouTube video (URL):",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=0, column=0, columnspan=3, padx=16, pady=(14, 6), sticky="w")
+
+        self.entry_yt_url = ctk.CTkEntry(
+            url_frame,
+            placeholder_text="https://www.youtube.com/watch?v=... nebo https://youtu.be/...",
+            height=38,
+            font=ctk.CTkFont(size=13),
+        )
+        self.entry_yt_url.grid(row=1, column=0, padx=(16, 6), pady=(0, 12), sticky="ew")
+
+        btn_paste_yt = ctk.CTkButton(
+            url_frame,
+            text="📋 Vložit ze schránky",
+            width=140,
+            height=38,
+            fg_color=("gray70", "gray30"),
+            hover_color=("gray60", "gray40"),
+            command=self._on_paste_yt_url,
+        )
+        btn_paste_yt.grid(row=1, column=1, padx=4, pady=(0, 12))
+
+        self.btn_probe_yt = ctk.CTkButton(
+            url_frame,
+            text="🔍 Načíst info o videu",
+            width=155,
+            height=38,
+            command=self._on_probe_yt_url,
+        )
+        self.btn_probe_yt.grid(row=1, column=2, padx=(4, 16), pady=(0, 12))
+
+        self.lbl_yt_info = ctk.CTkLabel(
+            url_frame,
+            text="Zadejte YouTube odkaz výše pro zobrazení názvu, délky a kanálu.",
+            font=ctk.CTkFont(size=12),
+            text_color=("gray30", "gray70"),
+            anchor="w",
+            justify="left",
+        )
+        self.lbl_yt_info.grid(row=2, column=0, columnspan=3, padx=16, pady=(0, 12), sticky="ew")
+
+        # Nastavení formátu a kvality
+        col1 = ctk.CTkFrame(tab, corner_radius=10)
+        col1.grid(row=2, column=0, padx=(14, 7), pady=6, sticky="nsew")
+        col1.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(col1, text="1. Cílový formát stažení:", font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=16, pady=(16, 6), anchor="w"
+        )
+        self.combo_yt_fmt = ctk.CTkOptionMenu(
+            col1,
+            values=[
+                "mp4 (Video MP4 - H.264 / AAC - univerzální)",
+                "mov (Video Apple QuickTime .MOV)",
+                "mkv (Video Matroska .MKV)",
+                "mp3 (Pouze zvuk .MP3 - 192 kbps)",
+                "aac (Pouze zvuk .AAC - 192 kbps)",
+                "wav (Pouze zvuk .WAV - bezztrátový)",
+            ],
+            height=36,
+        )
+        self.combo_yt_fmt.pack(padx=16, pady=(0, 16), fill="x")
+
+        col2 = ctk.CTkFrame(tab, corner_radius=10)
+        col2.grid(row=2, column=1, padx=(7, 14), pady=6, sticky="nsew")
+        col2.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(col2, text="2. Maximální rozlišení videa:", font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=16, pady=(16, 6), anchor="w"
+        )
+        self.combo_yt_res = ctk.CTkOptionMenu(
+            col2,
+            values=[
+                "1080p (Full HD - ideální pro MP4/MOV)",
+                "Nejvyšší dostupná (4K / 1440p / 1080p)",
+                "1440p (2K QHD)",
+                "720p (HD)",
+                "480p (SD - menší soubor)",
+            ],
+            height=36,
+        )
+        self.combo_yt_res.pack(padx=16, pady=(0, 16), fill="x")
+
+        # Možnost automaticky přidat do fronty
+        opts_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        opts_frame.grid(row=3, column=0, columnspan=2, padx=16, pady=(8, 4), sticky="ew")
+
+        self.chk_yt_auto_queue = ctk.CTkCheckBox(
+            opts_frame,
+            text="Po stažení automaticky přidat soubor do levé fronty a vybrat jej (pro okamžitý AI přepis nebo úpravy)",
+            font=ctk.CTkFont(size=12),
+        )
+        self.chk_yt_auto_queue.select()
+        self.chk_yt_auto_queue.pack(anchor="w")
+
+        # Tlačítko stáhnout
+        act_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        act_frame.grid(row=4, column=0, columnspan=2, padx=14, pady=16, sticky="ew")
+        act_frame.grid_columnconfigure(0, weight=1)
+
+        self.btn_run_yt = ctk.CTkButton(
+            act_frame,
+            text="📥 Stáhnout z YouTube (MP4 / MOV / Audio)",
+            height=50,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color="#dc2626",
+            hover_color="#b91c1c",
+            command=self._start_youtube_download,
+        )
+        self.btn_run_yt.grid(row=0, column=0, sticky="ew")
 
     # ------------------------------------------------------------------
     # ZÁLOŽKA 3: AI PŘEPIS (WHISPER) & BIONIC STUDIO
@@ -973,6 +1116,8 @@ Jak propojit aplikaci s Bionic / LM Studiem:
         state = "disabled" if busy else "normal"
         self.btn_run_audio.configure(state=state)
         self.btn_run_video.configure(state=state)
+        self.btn_run_yt.configure(state=state)
+        self.btn_probe_yt.configure(state=state)
         self.btn_transcribe.configure(state=state)
         self.btn_send_bionic.configure(state=state)
         self.btn_add_files.configure(state=state)
@@ -1127,6 +1272,111 @@ Jak propojit aplikaci s Bionic / LM Studiem:
                     )
 
             self.after(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # AKCE 2.5: STAHOVÁNÍ Z YOUTUBE (MP4 / MOV / AUDIO)
+    # ------------------------------------------------------------------
+    def _on_paste_yt_url(self):
+        try:
+            clip = self.clipboard_get().strip()
+            if clip:
+                self.entry_yt_url.delete(0, "end")
+                self.entry_yt_url.insert(0, clip)
+                self._on_probe_yt_url()
+        except Exception:
+            pass
+
+    def _on_probe_yt_url(self):
+        url = self.entry_yt_url.get().strip()
+        if not url:
+            messagebox.showwarning("Chybí URL", "Zadejte nebo vložte prosím odkaz na YouTube video.")
+            return
+
+        self.lbl_yt_info.configure(text="🔄 Načítám informace o YouTube videu...", text_color=("gray30", "gray70"))
+
+        def _worker():
+            try:
+                info = fetch_youtube_info(url)
+                res_list = ", ".join(f"{h}p" for h in info["heights"][:6]) if info["heights"] else "Standardní"
+                txt = (
+                    f"🎬 Název: {info['title']}\n"
+                    f"👤 Kanál: {info['uploader']}   |   ⏱️ Délka: {info['duration_str']}   |   🎞️ Dostupná rozlišení: {res_list}"
+                )
+                self.after(0, lambda: self.lbl_yt_info.configure(text=txt, text_color=("#15803d", "#4ade80")))
+            except Exception as e:
+                self.after(0, lambda err=str(e): self.lbl_yt_info.configure(
+                    text=f"❌ Nepodařilo se načíst info o videu: {err}",
+                    text_color=("#b91c1c", "#f87171"),
+                ))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _get_youtube_download_folder(self) -> str:
+        custom_dir = self.entry_out_dir.get().strip()
+        if custom_dir and os.path.isdir(custom_dir):
+            return custom_dir
+        default_dl = os.path.join(str(Path.home()), "Downloads")
+        if os.path.isdir(default_dl):
+            return default_dl
+        out_fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        os.makedirs(out_fallback, exist_ok=True)
+        return out_fallback
+
+    def _start_youtube_download(self):
+        url = self.entry_yt_url.get().strip()
+        if not url:
+            messagebox.showwarning("Chybí odkaz", "Nejprve prosím vložte odkaz na YouTube video.")
+            return
+
+        target_fmt = self.combo_yt_fmt.get()
+        max_res = self.combo_yt_res.get()
+        auto_queue = bool(self.chk_yt_auto_queue.get())
+        out_folder = self._get_youtube_download_folder()
+
+        self.cancel_event.clear()
+        self._set_busy(True, "Připravuji stahování z YouTube...")
+        self.progress_bar.set(0.02)
+
+        def _on_prog(frac: float, msg: str):
+            self.after(0, lambda: self.progress_bar.set(frac))
+            self.after(0, lambda: self.lbl_status.configure(text=msg))
+
+        def _worker():
+            try:
+                saved_file = download_youtube_media(
+                    url=url,
+                    output_dir=out_folder,
+                    target_format=target_fmt,
+                    max_resolution=max_res,
+                    progress_callback=_on_prog,
+                    cancel_event=self.cancel_event,
+                )
+
+                def _done():
+                    self.progress_bar.set(1.0)
+                    if auto_queue and os.path.isfile(saved_file):
+                        if saved_file not in self.files:
+                            self.files.append(saved_file)
+                        self.selected_file = saved_file
+                        self._rebuild_file_list()
+                        self._update_selected_file_info()
+                    self._set_busy(False, f"✅ Staženo z YouTube: {os.path.basename(saved_file)} (složka: {out_folder})")
+                    messagebox.showinfo(
+                        "YouTube stahování dokončeno",
+                        f"Soubor byl úspěšně stažen a uložen:\n{saved_file}",
+                    )
+
+                self.after(0, _done)
+            except Exception as e:
+                def _err(err_msg=str(e)):
+                    self.progress_bar.set(0.0)
+                    self._set_busy(False, f"❌ Chyba při stahování z YouTube: {err_msg}")
+                    if not self.cancel_event.is_set():
+                        messagebox.showerror("Chyba stahování z YouTube", err_msg)
+
+                self.after(0, _err)
 
         threading.Thread(target=_worker, daemon=True).start()
 

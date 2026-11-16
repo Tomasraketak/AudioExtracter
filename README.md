@@ -3,8 +3,9 @@
 Moderní, plně lokální desktopová aplikace s grafickým rozhraním (GUI) pro:
 1. **Extrakci audia z videí** (`MP4`, `MOV`, `MKV`, `AVI`, `WEBM`, `FLV`, `WMV` ➔ `MP3`, `AAC`, `M4A`, `WAV`, `FLAC`, `OGG`, `OPUS`).
 2. **Vzájemnou konverzi audio a video formátů** (`AAC ⇄ MP3 ⇄ WAV ⇄ FLAC` a `MP4 ⇄ MOV ⇄ MKV ⇄ WEBM ⇄ AVI` včetně bleskového *Stream Copy* režimu a GPU enkódování přes **NVIDIA NVENC**).
-3. **Lokální AI přepis audia a videa (Speech-to-Text)** pomocí **Faster-Whisper** s hardwarovou akcelerací pro **NVIDIA GeForce RTX 5060 Ti (16 GB VRAM)** a vícejádrový procesor **AMD Ryzen 9600**.
-4. **Propojení s Bionic Studiem / LM Studiem** přes lokální API (`http://localhost:1234/v1`) pro okamžité shrnutí přepisů, vytváření poznámek, akčních bodů a překladů.
+3. **Stahování YouTube videí a audia podle odkazu** přímo do formátů `MP4`, `MOV`, `MKV`, `MP3`, `AAC` nebo `WAV` s automatickým přidáním do fronty.
+4. **Lokální AI přepis audia a videa (Speech-to-Text)** pomocí **Faster-Whisper** s přímým využitím tvého modelu v **Bionic Studiu** na **NVIDIA GeForce RTX 5060 Ti (16 GB VRAM)** a vícejádrovém procesoru **AMD Ryzen 9600**.
+5. **Propojení s Bionic Studiem / LM Studiem** přes lokální API pro okamžité shrnutí přepisů, vytváření poznámek, akčních bodů a překladů.
 
 ---
 
@@ -53,6 +54,14 @@ Přejděte na druhou záložku **🎬 Konverze Videa (MP4 ⇄ MOV)**:
   * **Stream Copy (Bleskový převod bez rekomprese):** Pouze změní kontejner (např. `MOV ➔ MP4` nebo `MP4 ➔ MOV`) bez jakéhokoliv překódování obrazu. Trvá jen zlomek vteřiny a zachová 100% kvalitu.
   * **GPU: NVIDIA NVENC H.264 / HEVC (RTX 5060 Ti):** Využije hardwarový enkodér na vaší grafické kartě. Ideální, pokud zároveň měníte rozlišení (`1080p`, `720p`, `480p`) nebo chcete zmenšit velikost videa pomocí nastavení kvality (`CRF / CQ`).
   * **CPU: x264 (Ryzen 9600):** Softwarové kódování přes procesor.
+
+---
+
+### 3.5. Stahování YouTube videí a audia (`MP4 / MOV / MP3 / AAC / WAV`)
+Přejděte na záložku **📥 YouTube Stahovač (MP4 / MOV)**:
+* Vložte odkaz na YouTube video (nebo klikněte na **📋 Vložit ze schránky**, což rovnou načte název videa, kanál, délku a dostupná rozlišení).
+* Zvolte cílový formát (`MP4`, `MOV`, `MKV`, nebo čisté audio `MP3`, `AAC`, `WAV`) a maximální rozlišení (`1080p Full HD`, `4K / 1440p`, `720p`, `480p`).
+* Klikněte na **📥 Stáhnout z YouTube** – po stažení se soubor automaticky zařadí do levé fronty a rovnou vybere, takže na něj můžete ihned pustit **AI přepis** nebo další konverzi!
 
 ---
 
