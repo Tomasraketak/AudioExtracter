@@ -43,6 +43,14 @@ from reels_engine import (
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
+# Oddělení procesu od výchozí ikony pythonw.exe na hlavním panelu Windows (Taskbar)
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BionicStudio.MediaAudioStudio.App")
+    except Exception:
+        pass
+
 SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 
 SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".ts"}
@@ -67,12 +75,10 @@ class BionicMediaStudioApp(BaseWindow):
         self.title("Bionic Media & Audio Studio — RTX 5060 Ti & Ryzen 9600 Edition")
         self.geometry("1280x860")
         self.minsize(1100, 750)
-        ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
-        if os.path.exists(ico_path):
-            try:
-                self.iconbitmap(ico_path)
-            except Exception:
-                pass
+        self._apply_app_icon()
+        # CustomTkinter přepisuje ikonu okna po 200 ms, proto ji znovu nastavíme po 220 ms a 550 ms
+        self.after(220, self._apply_app_icon)
+        self.after(550, self._apply_app_icon)
 
         # Stav aplikace
         self.files: list[str] = []
@@ -99,6 +105,69 @@ class BionicMediaStudioApp(BaseWindow):
 
         # Automatický test Bionic Studio připojení na pozadí
         threading.Thread(target=self._refresh_bionic_status_bg, daemon=True).start()
+
+    def _apply_app_icon(self):
+        """Nastaví vlastní ikonu aplikace do titulkového pruhu i na hlavní panel Windows (Taskbar)."""
+        ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
+        if not os.path.exists(ico_path):
+            try:
+                from generate_icon import create_app_icon
+                create_app_icon(ico_path)
+            except Exception:
+                return
+
+        try:
+            self.iconbitmap(default=ico_path)
+            self.iconbitmap(ico_path)
+        except Exception:
+            pass
+
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(ico_path)
+            self._icon_photos = [
+                ImageTk.PhotoImage(img.resize((256, 256), Image.Resampling.LANCZOS)),
+                ImageTk.PhotoImage(img.resize((64, 64), Image.Resampling.LANCZOS)),
+                ImageTk.PhotoImage(img.resize((48, 48), Image.Resampling.LANCZOS)),
+                ImageTk.PhotoImage(img.resize((32, 32), Image.Resampling.LANCZOS)),
+                ImageTk.PhotoImage(img.resize((16, 16), Image.Resampling.LANCZOS)),
+            ]
+            self.wm_iconphoto(True, *self._icon_photos)
+        except Exception:
+            pass
+
+        if os.name == "nt":
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                LR_LOADFROMFILE = 0x00000010
+                IMAGE_ICON = 1
+                WM_SETICON = 0x0080
+                ICON_SMALL = 0
+                ICON_BIG = 1
+                GCLP_HICON = -14
+                GCLP_HICONSM = -34
+                GA_ROOT = 2
+
+                hicon_big = user32.LoadImageW(None, ico_path, IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
+                hicon_small = user32.LoadImageW(None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
+
+                hwnd = self.winfo_id()
+                parent_hwnd = user32.GetParent(hwnd)
+                root_hwnd = user32.GetAncestor(hwnd, GA_ROOT)
+
+                for target_hwnd in {hwnd, parent_hwnd, root_hwnd}:
+                    if target_hwnd:
+                        if hicon_big:
+                            user32.SendMessageW(target_hwnd, WM_SETICON, ICON_BIG, hicon_big)
+                            if hasattr(user32, "SetClassLongPtrW"):
+                                user32.SetClassLongPtrW(target_hwnd, GCLP_HICON, hicon_big)
+                        if hicon_small:
+                            user32.SendMessageW(target_hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+                            if hasattr(user32, "SetClassLongPtrW"):
+                                user32.SetClassLongPtrW(target_hwnd, GCLP_HICONSM, hicon_small)
+            except Exception:
+                pass
 
     def _load_settings(self):
         detected_url = detect_bionic_server_url()

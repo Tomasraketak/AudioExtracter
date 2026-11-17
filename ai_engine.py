@@ -495,7 +495,9 @@ class BionicStudioClient:
                     "content": (
                         "Jsi profesionální AI asistent a editor napojený na Bionic Studio. "
                         "Zpracováváš audio přepisy přesně podle zadání uživatele. Odpovídej přehledně, "
-                        "strukturovaně (pomocí odrážek a nadpisů) a v jazyce, který požaduje uživatel (výchozí čeština)."
+                        "strukturovaně (pomocí odrážek a nadpisů) a v jazyce, který požaduje uživatel (výchozí čeština). "
+                        "Běžně používané anglicismy, anglické odborné pojmy a slang zbytečně nepřekládej do češtiny, "
+                        "pokud o plný překlad uživatel výslovně nepožádá."
                     ),
                 },
                 {

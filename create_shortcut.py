@@ -27,7 +27,7 @@ $shortcut.Arguments = '"{app_py}"'
 $shortcut.WorkingDirectory = '{app_dir}'
 $shortcut.Description = 'Extrakce audia, konverze MP4/MOV/AAC/MP3 a AI Prepis (Bionic Studio)'
 if (Test-Path '{icon_path}') {{
-    $shortcut.IconLocation = '{icon_path}'
+    $shortcut.IconLocation = '{icon_path},0'
 }}
 $shortcut.Save()
 Write-Output $lnkPath

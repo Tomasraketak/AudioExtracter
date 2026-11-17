@@ -301,12 +301,21 @@ def correct_chunks_with_gemma(
     hint_part = f"\nKontext / téma videa od uživatele: {custom_hint.strip()}\n" if custom_hint.strip() else ""
 
     system_prompt = (
-        "Jsi špičkový jazykový korektor a editor titulků pro krátká videa (Reels / Shorts / YouTube). "
+        "Jsi špičkový jazykový korektor a editor titulků pro krátká videa (Reels / Shorts / TikTok / YouTube). "
         "Dostaneš očíslovaný přepis audia pořízený modelem Whisper. "
-        "Tvým úkolem je projít CELÝ přepis, pochopit jeho kontext a téma, a opravit místa, kde text "
-        "nedává smysl (špatně rozpoznaná nebo přeslechnutá slova, zkomolené názvy, odborné výrazy nebo "
-        "gramatické nesmysly) podle toho, co bylo na základě okolního kontextu a zvukové podobnosti reálně řečeno.\n\n"
-        "STRIKTNÍ PRAVIDLA VÝSTUPU:\n"
+        "Tvým úkolem je projít CELÝ přepis, pochopit jeho kontext a téma, a opravit POUZE místa, kde text "
+        "kvůli chybě rozpoznávání řeči (Speech-to-Text) nedává smysl (špatně rozpoznaná nebo přeslechnutá slova, "
+        "zkomolené názvy značek/programů nebo zjevné nesmysly) podle toho, co bylo na základě okolního kontextu "
+        "a zvukové podobnosti reálně řečeno.\n\n"
+        "ZÁSADNÍ PRAVIDLA PRO ANGLICISMY A HOVOROVÝ STYL:\n"
+        "1. NIKDY nepřekládej anglicismy, anglická slova, slang ani moderní výrazy do češtiny! "
+        "(Např. výrazy jako setup, workflow, vibe, random, content, skill, stream, checknout, vyrenderovat, "
+        "overlay, reels, shorts, mindset, feedback, call, hype, cringe, literally, atd. VŽDY ponechej v původním znění).\n"
+        "2. Pokud Whisper zapsal anglický výraz foneticky česky nebo zkomoleně (např. 'setap' -> 'setup', "
+        "'vorkflou' -> 'workflow', 'kontent' -> 'content', 'da vinči rezolv' -> 'DaVinci Resolve'), oprav pouze "
+        "jeho pravopis na správný originální tvar, ale NEPŘEKLÁDEJ ho do českých ekvivalentů.\n"
+        "3. Neměň přirozený hovorový jazyk mluvčího na knižní/spisovnou češtinu. Pokud věta dává v běžné řeči smysl, nech ji beze změny.\n\n"
+        "STRIKTNÍ PRAVIDLA FORMÁTU VÝSTUPU:\n"
         "1. Zachovej přesně stejné číslování řádků [1], [2], [3]... až do konce.\n"
         "2. Každý řádek musí začínat svým číslem v hranaté závorce, např.: [1] Opravený text\n"
         "3. Neslučuj řádky dohromady a žádný řádek nevynechávej, aby sedělo časování titulků.\n"
@@ -314,7 +323,8 @@ def correct_chunks_with_gemma(
     )
 
     user_prompt = (
-        f"Oprav prosím následující přepis audia na místech, kde text nedává smysl, podle okolního kontextu.{hint_part}\n\n"
+        f"Oprav prosím následující přepis audia pouze na místech, kde text nedává smysl (přeslechnutá slova), podle okolního kontextu. "
+        f"Anglicismy, anglické pojmy a hovorové výrazy nepřekládej do češtiny.{hint_part}\n\n"
         f"PŘEPIS K OPRAVĚ:\n{full_numbered_text}"
     )
 
